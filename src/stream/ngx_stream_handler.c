@@ -54,6 +54,16 @@ ngx_stream_init_connection(ngx_connection_t *c)
     if (c->listening->data_link) {
         c->listening->servers = alg_listen_servers;
         port = c->listening->servers;
+
+        /**
+         * FIXME:
+         * limit the naddrs to avoid segment fault.
+         */
+        if (!port || port->naddrs != 1) {
+            ngx_stream_close_connection(c);
+            alg_listen_servers = NULL;
+            return;
+        }
     }
 #endif
 
