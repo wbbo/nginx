@@ -510,9 +510,11 @@ static ngx_int_t ngx_stream_alg_process(ngx_event_t *ev,
 
     c->buffer->last += n;
 
-    if (pscf->alg_proto == NGX_STREAM_ALG_PROTO_NONE) {
-        ; // nothing to do
-    }
+    /**
+     * only OPC_CLASSIC and FTP has dynamic port, other alg_proto
+     * just let pass.
+     */
+
     if (pscf->alg_proto == NGX_STREAM_ALG_PROTO_FTP) {
         rc = ngx_stream_alg_process_ftp(s, c->buffer);
         if (rc == NGX_ERROR || rc == NGX_AGAIN) {
@@ -520,7 +522,7 @@ static ngx_int_t ngx_stream_alg_process(ngx_event_t *ev,
             return rc;
         }
     }
-    if (pscf->alg_proto == NGX_STREAM_ALG_PROTO_OPC_DA) {
+    if (pscf->alg_proto == NGX_STREAM_ALG_PROTO_OPC_CLASSIC) {
         rc = ngx_stream_alg_process_opcda(s, c->buffer);
         if (rc == NGX_ERROR || rc == NGX_AGAIN) {
             ngx_log_error(NGX_LOG_ERR, c->log, 0, "ngx stream alg process opcda failed");

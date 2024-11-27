@@ -75,9 +75,46 @@ static ngx_conf_post_t  ngx_stream_proxy_ssl_conf_command_post =
 #if (NGX_STREAM_ALG)
 
 static ngx_conf_enum_t ngx_stream_alg_proto_type[] = {
-    { ngx_string("none"), NGX_STREAM_ALG_PROTO_NONE },
-    { ngx_string("ftp"), NGX_STREAM_ALG_PROTO_FTP },
-    { ngx_string("opcda"), NGX_STREAM_ALG_PROTO_OPC_DA },
+    // web
+    { ngx_string("HTTP"), NGX_STREAM_ALG_PROTO_HTTP },
+    { ngx_string("HTTPS"), NGX_STREAM_ALG_PROTO_HTTPS },
+    // mail
+    { ngx_string("SMTP"), NGX_STREAM_ALG_PROTO_SMTP },
+    { ngx_string("IMAP"), NGX_STREAM_ALG_PROTO_IMAP },
+    { ngx_string("POP3"), NGX_STREAM_ALG_PROTO_POP3 },
+    // file
+    { ngx_string("FTP"), NGX_STREAM_ALG_PROTO_FTP },
+    { ngx_string("SMB"), NGX_STREAM_ALG_PROTO_SMB },
+    { ngx_string("NFS"), NGX_STREAM_ALG_PROTO_NFS },
+    // database
+    { ngx_string("MYSQL"), NGX_STREAM_ALG_PROTO_MYSQL },
+    { ngx_string("ORACLE"), NGX_STREAM_ALG_PROTO_ORACLE },
+    { ngx_string("POSTGRESQL"), NGX_STREAM_ALG_PROTO_POSTGRESQL },
+    { ngx_string("SQLSERVER"), NGX_STREAM_ALG_PROTO_SQLSERVER },
+    { ngx_string("DB2"), NGX_STREAM_ALG_PROTO_DB2 },
+    { ngx_string("GBASE"), NGX_STREAM_ALG_PROTO_GBASE },
+    { ngx_string("DM"), NGX_STREAM_ALG_PROTO_DM },
+    { ngx_string("KINGBASE"), NGX_STREAM_ALG_PROTO_KINGBASE },
+    // remote access
+    { ngx_string("TELNET"), NGX_STREAM_ALG_PROTO_TELNET },
+    { ngx_string("SSH"), NGX_STREAM_ALG_PROTO_SSH },
+    { ngx_string("MSRDP"), NGX_STREAM_ALG_PROTO_MSRDP },
+    // common
+    { ngx_string("TCP_NULL"), NGX_STREAM_ALG_PROTO_TCP_NULL },
+    { ngx_string("UDP_NULL"), NGX_STREAM_ALG_PROTO_UDP_NULL },
+    // industrial application
+    { ngx_string("MODBUS"), NGX_STREAM_ALG_PROTO_MODBUS },
+    { ngx_string("UMAS"), NGX_STREAM_ALG_PROTO_UMAS },
+    { ngx_string("MQTT"), NGX_STREAM_ALG_PROTO_MQTT },
+    { ngx_string("DNP3"), NGX_STREAM_ALG_PROTO_DNP3 },
+    { ngx_string("IEC104"), NGX_STREAM_ALG_PROTO_IEC104 },
+    { ngx_string("S7"), NGX_STREAM_ALG_PROTO_S7 },
+    { ngx_string("OPC_CLASSIC"), NGX_STREAM_ALG_PROTO_OPC_CLASSIC },
+    { ngx_string("OPC_UA"), NGX_STREAM_ALG_PROTO_OPC_UA },
+    { ngx_string("FINS"), NGX_STREAM_ALG_PROTO_FINS },
+    { ngx_string("BACNET"), NGX_STREAM_ALG_PROTO_BACNET },
+    { ngx_string("ETHERNET/IP"), NGX_STREAM_ALG_PROTO_ETHERNET_IP },
+    // terminate
     { ngx_null_string, 0 }
 };
 
