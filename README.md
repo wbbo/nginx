@@ -24,7 +24,9 @@ ALG Support for NGINX
             listen 2121;
             proxy_timeout 65535;
             proxy_pass vsftpd;
-            alg ftp;
+            alg_proto ftp;
+            alg_port_min 1234;
+            alg_port_max 1234;
         }
     }
     corresponding network topology is shown bellow:
@@ -37,8 +39,8 @@ ALG Support for NGINX
 
     a. FTP PASV/PORT mode support.
     b. OPC DA support.
+    c. User defined data link port range.
 
 ## TO DO features
 
-    a. User defined data link port range.
-    b. packet filter by configuration.
+    d. packet filter by configuration.

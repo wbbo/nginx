@@ -19,11 +19,49 @@
 
 #include <packet-dcom.h>
 
-static ngx_conf_enum_t ngx_stream_alg_proto_type[] = {
-    { ngx_string("ftp"), NGX_STREAM_ALG_PROTO_FTP },
-    { ngx_string("opcda"), NGX_STREAM_ALG_PROTO_OPC_DA },
-    { ngx_null_string, 0 }
-};
+ngx_int_t ngx_stream_alg_get_port(ngx_stream_session_t *s)
+{
+    ngx_stream_proxy_srv_conf_t *pscf;
+    ngx_queue_t *q;
+
+    if (s->alg_port) { // already have one
+        return NGX_OK;
+    }
+
+    pscf = ngx_stream_get_module_srv_conf(s, ngx_stream_proxy_module);
+
+    if (ngx_queue_empty(&pscf->alg_port)) { // no port available
+        return NGX_ERROR;
+    }
+
+    q = ngx_queue_head(&pscf->alg_port);
+    s->alg_port = ngx_queue_data(q, ngx_stream_alg_port_t, node);
+
+    // remove the node from queue
+    ngx_queue_remove(q);
+
+    return NGX_OK;
+}
+
+void ngx_stream_alg_free_port(ngx_stream_session_t *s)
+{
+    ngx_stream_proxy_srv_conf_t *pscf;
+    ngx_stream_alg_port_t *alg_port;
+
+    if (!s->alg_port) {
+        return;
+    }
+
+    pscf = ngx_stream_get_module_srv_conf(s, ngx_stream_proxy_module);
+
+    alg_port = (ngx_stream_alg_port_t *)(s->alg_port);
+
+    // free to alg queue tail
+    s->alg_port = NULL;
+    ngx_queue_insert_tail(&pscf->alg_port, &alg_port->node);
+
+    return;
+}
 
 static ngx_int_t ngx_stream_alg_new_listen(ngx_stream_session_t *s, ngx_uint_t port)
 {
@@ -195,7 +233,8 @@ ngx_stream_alg_process_ftp(ngx_stream_session_t *s, ngx_buf_t *buffer)
     }
 
     if (ftp_mode) {
-        ngx_int_t rc;
+        ngx_stream_alg_port_t *alg_port;
+        ngx_int_t rv;
         ngx_int_t port = 0;
         ngx_uint_t retry = 0;
         p += 1;
@@ -220,15 +259,21 @@ ngx_stream_alg_process_ftp(ngx_stream_session_t *s, ngx_buf_t *buffer)
 
         ngx_inet_ntop(addr.sin_family, (struct sockaddr *)&addr.sin_addr, addr_str, INET_ADDRSTRLEN);
 
-        rc = sscanf((const char *)addr_str, "%u.%u.%u.%u", &ip[0], &ip[1], &ip[2], &ip[3]);
-        if(rc != 4 ) {
+        rv = sscanf((const char *)addr_str, "%u.%u.%u.%u", &ip[0], &ip[1], &ip[2], &ip[3]);
+        if(rv != 4 ) {
             ngx_log_debug(NGX_LOG_DEBUG_STREAM, c->log, 0, "invalid address");
             return NGX_OK;
         }
 
-        #define PORT_DEF_TEST 60000
+        rv = ngx_stream_alg_get_port(s);
+        if (rv != NGX_OK) {
+            ngx_log_debug(NGX_LOG_DEBUG_STREAM, c->log, 0, "no data port available");
+            return NGX_ERROR;
+        }
+
+        alg_port = (ngx_stream_alg_port_t *)(s->alg_port);
         do {
-            port = ngx_stream_alg_new_listen(s, PORT_DEF_TEST);
+            port = ngx_stream_alg_new_listen(s, alg_port->port);
         } while(port <= 0 && retry++ < 5);
 
         if (port <= 0) {
@@ -266,6 +311,7 @@ ngx_stream_alg_process_opcda(ngx_stream_session_t *s, ngx_buf_t *buffer)
 {
     ngx_stream_alg_ctx_t *ctx;
     ngx_stream_upstream_resolved_t *peer;
+    ngx_stream_alg_port_t *alg_port;
     ngx_socket_t fd;
     struct sockaddr_in addr, *paddr;
     socklen_t addrlen;
@@ -309,9 +355,13 @@ ngx_stream_alg_process_opcda(ngx_stream_session_t *s, ngx_buf_t *buffer)
         INET_ADDRSTRLEN
     );
 
-    static uint16_t port_def_test_opcda = 10000;
+    rv = ngx_stream_alg_get_port(s);
+    if (rv != NGX_OK) {
+        return NGX_ERROR;
+    }
 
-    d.iport = port_def_test_opcda;
+    alg_port = (ngx_stream_alg_port_t *)(s->alg_port);
+    d.iport = alg_port->port;
     buffer->priv = &d;
 
     NGX_PRINT("dcom proxy ip %s port %d fd %d\n", d.iip, d.iport, fd);
@@ -348,7 +398,7 @@ ngx_stream_alg_process_opcda(ngx_stream_session_t *s, ngx_buf_t *buffer)
     // new listening on proxy port for data link
     retry = 0;
     do {
-        new_port = ngx_stream_alg_new_listen(s, port_def_test_opcda);
+        new_port = ngx_stream_alg_new_listen(s, d.iport);
     } while(new_port <= 0 && retry++ < 5);
 
     if (new_port <= 0) {
@@ -360,8 +410,6 @@ ngx_stream_alg_process_opcda(ngx_stream_session_t *s, ngx_buf_t *buffer)
     peer->naddrs = 1;
     peer->port = htons(d.oport);
     peer->no_port = 0;
-
-    port_def_test_opcda++;
 
     return NGX_OK;
 }
@@ -377,7 +425,7 @@ static ngx_int_t ngx_stream_alg_process(ngx_event_t *ev,
     ngx_chain_t *chain;
     ngx_int_t rc;
     ngx_stream_core_srv_conf_t *cscf;
-    ngx_stream_alg_srv_conf_t *scf;
+    ngx_stream_proxy_srv_conf_t *pscf;
 
     c = ev->data;
     s = c->data;
@@ -385,13 +433,13 @@ static ngx_int_t ngx_stream_alg_process(ngx_event_t *ev,
 
     cscf = ngx_stream_get_module_srv_conf(s, ngx_stream_core_module);
     if (!cscf) {
-        ngx_log_error(NGX_LOG_ERR, c->log, NGX_EINVAL, "core srv conf not found");
+        ngx_log_error(NGX_LOG_ERR, c->log, NGX_EINVAL, "stream core srv conf null");
         return NGX_ERROR;
     }
 
-    scf = ngx_stream_get_module_srv_conf(s, ngx_stream_alg_module);
-    if (!scf) {
-        ngx_log_error(NGX_LOG_ERR, c->log, NGX_EINVAL, "alg srv conf not found");
+    pscf = ngx_stream_get_module_srv_conf(s, ngx_stream_proxy_module);
+    if (!pscf) {
+        ngx_log_error(NGX_LOG_ERR, c->log, NGX_EINVAL, "stream proxy srv conf null");
         return NGX_ERROR;
     }
 
@@ -440,25 +488,17 @@ static ngx_int_t ngx_stream_alg_process(ngx_event_t *ev,
 
     c->buffer->last += n;
 
-    if ((scf->alg_proto != NGX_STREAM_ALG_PROTO_FTP)
-        && (scf->alg_proto != NGX_STREAM_ALG_PROTO_OPC_DA)) {
-        ngx_log_error(NGX_LOG_ERR, c->log, NGX_EINVAL, "not support the proto type");
-        return NGX_ERROR;
+    if (pscf->alg_proto == NGX_STREAM_ALG_PROTO_NONE) {
+        ; // nothing to do
     }
-
-    /* TODO: proxy filter by USER config.
-       eg. on the listen port 2121 only proxy ftp proto to upstream vsftpd.
-       other proto ignored. we need do fitler by ip and port.
-    */
-
-    if (scf->alg_proto == NGX_STREAM_ALG_PROTO_FTP) {
+    if (pscf->alg_proto == NGX_STREAM_ALG_PROTO_FTP) {
         rc = ngx_stream_alg_process_ftp(s, c->buffer);
         if (rc == NGX_ERROR || rc == NGX_AGAIN) {
             ngx_log_error(NGX_LOG_ERR, c->log, 0, "ngx stream alg process ftp failed");
             return rc;
         }
     }
-    if (scf->alg_proto == NGX_STREAM_ALG_PROTO_OPC_DA) {
+    if (pscf->alg_proto == NGX_STREAM_ALG_PROTO_OPC_DA) {
         rc = ngx_stream_alg_process_opcda(s, c->buffer);
         if (rc == NGX_ERROR || rc == NGX_AGAIN) {
             ngx_log_error(NGX_LOG_ERR, c->log, 0, "ngx stream alg process opcda failed");
@@ -581,35 +621,19 @@ ngx_stream_alg_create_main_conf(ngx_conf_t *cf)
     return mcf;
 }
 
-static void *
-ngx_stream_alg_create_srv_conf(ngx_conf_t *cf)
-{
-    ngx_stream_alg_srv_conf_t  *scf;
-
-    scf = ngx_pcalloc(cf->pool, sizeof(ngx_stream_alg_srv_conf_t));
-    if (!scf) {
-        return NULL;
-    }
-
-    scf->alg_proto = NGX_CONF_UNSET_UINT;
-
-    return scf;
-}
-
 static ngx_int_t
 ngx_stream_alg_handler(ngx_stream_session_t *s)
 {
-    ngx_stream_alg_srv_conf_t *scf;
+    ngx_stream_proxy_srv_conf_t *pscf;
     ngx_connection_t *c;
     ngx_stream_alg_ctx_t *ctx;
     ngx_listening_t *l;
 
     c = s->connection;
 
-    scf = ngx_stream_get_module_srv_conf(s, ngx_stream_alg_module);
-    if (scf->alg_proto != NGX_STREAM_ALG_PROTO_FTP
-        && scf->alg_proto != NGX_STREAM_ALG_PROTO_OPC_DA) {
-        ngx_log_error(NGX_LOG_ERR, c->log, NGX_ENOENT, "stream alg module srv conf null");
+    pscf = ngx_stream_get_module_srv_conf(s, ngx_stream_proxy_module);
+    if (!pscf) {
+        ngx_log_error(NGX_LOG_ERR, c->log, NGX_ENOENT, "stream proxy module srv conf null");
         return NGX_DECLINED;
     }
 
@@ -668,25 +692,7 @@ ngx_stream_alg_postconfiguration(ngx_conf_t *cf)
     return NGX_OK;
 }
 
-static char *
-ngx_stream_alg_proto(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
-{
-    char *rv = ngx_conf_set_enum_slot(cf, cmd, conf);
-    if (rv != NGX_CONF_OK) {
-        return rv;
-    }
-    return NGX_CONF_OK;
-}
-
 static ngx_command_t ngx_stream_alg_commands[] = {
-    {
-        ngx_string("alg"),
-        NGX_STREAM_MAIN_CONF | NGX_STREAM_SRV_CONF | NGX_CONF_TAKE1,
-        ngx_stream_alg_proto,
-        NGX_STREAM_SRV_CONF_OFFSET,
-        offsetof(ngx_stream_alg_srv_conf_t, alg_proto),
-        ngx_stream_alg_proto_type
-    },
     ngx_null_command
 };
 
@@ -695,7 +701,7 @@ static ngx_stream_module_t ngx_stream_alg_module_ctx = {
     ngx_stream_alg_postconfiguration,    /* postconfiguration */
     ngx_stream_alg_create_main_conf,     /* create main conf */
     NULL,                                /* init main conf */
-    ngx_stream_alg_create_srv_conf,      /* create server conf */
+    NULL,                                /* create server conf */
     NULL,                                /* merge server conf */
 };
 
