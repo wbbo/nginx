@@ -56,7 +56,7 @@ struct ngx_listening_s {
 
 #if (NGX_STREAM_ALG)
 
-    void               *data_link; /** ngx_htbl_t */
+    void               *data_link; /** ngx_stream_alg_ctx_t */
 
 #endif
 

@@ -462,12 +462,12 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
 
     ngx_stream_alg_ctx_t *alg_ctx;
     ngx_listening_t *ls;
-    ngx_htbl_t *htbl;
+    ngx_htbl_t *htbl = NULL;
 
     ls = c->listening;
-    htbl = ls->data_link;
+    alg_ctx = ls->data_link;
 
-    if (!htbl) { // ctrl session
+    if (!alg_ctx) { // ctrl session
         alg_ctx = ngx_stream_alg_get_ctx(s);
 
         c->write->handler =
@@ -481,6 +481,8 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
                 ngx_stream_proxy_downstream_handler,
                 NGX_STREAM_ALG_DOWNSTREAM
             );
+    } else {
+        htbl = alg_ctx->htbl;
     }
 
 #endif
@@ -516,7 +518,7 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
         ngx_stream_alg_val_t *val;
         ngx_htbl_elm_t *elm;
 
-        struct sockaddr_in addr;
+        struct sockaddr_in addr, *paddr;
         socklen_t len;
 
         // resolve downstream ip
@@ -528,7 +530,10 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
             ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid socket fd");
             return;
         }
-        key.ip = addr.sin_addr.s_addr;
+        key.downstream_ip = addr.sin_addr.s_addr;
+        paddr = (struct sockaddr_in *)ls->sockaddr;
+        key.listen_ip = paddr->sin_addr.s_addr;
+        key.listen_port = paddr->sin_port;
 
         elm = ngx_htbl_search(htbl, &key);
         if (!elm) {
@@ -2014,11 +2019,13 @@ ngx_stream_proxy_finalize(ngx_stream_session_t *s, ngx_uint_t rc)
 #if (NGX_STREAM_ALG)
 
     ngx_listening_t *ls;
+    ngx_stream_alg_ctx_t *alg_ctx;
     ngx_htbl_t *htbl;
 
     if (s->peer) { // data session
         ls = s->connection->listening;
-        htbl = ls->data_link;
+        alg_ctx = ls->data_link;
+        htbl = alg_ctx->htbl;
         ngx_htbl_remove(htbl, s->key);
         s->peer = NULL;
         s->key = NULL;
@@ -2371,9 +2378,9 @@ ngx_stream_proxy_postconfiguration(ngx_conf_t *cf)
 #if (NGX_STREAM_ALG)
 
     ngx_stream_proxy_srv_conf_t *pscf;
-    ngx_htbl_ops_t ops;
     ngx_listening_t *listen;
     ngx_stream_alg_port_t *alg_port;
+    ngx_stream_alg_ctx_t *ctx;
     ngx_int_t rv;
 
     pscf = ngx_stream_conf_get_module_srv_conf(cf, ngx_stream_proxy_module);
@@ -2404,8 +2411,7 @@ ngx_stream_proxy_postconfiguration(ngx_conf_t *cf)
         pscf->alg_inited_once = 1;
     }
 
-    ops.hash = ngx_stream_alg_hash;
-    ops.compare = ngx_stream_alg_compare;
+    ctx = ngx_stream_alg_get_ctx(NULL);
 
     if (!ngx_queue_empty(&pscf->alg_port)) {
         ngx_queue_foreach_data(alg_port, &pscf->alg_port, node) {
@@ -2414,11 +2420,7 @@ ngx_stream_proxy_postconfiguration(ngx_conf_t *cf)
             rv = ngx_stream_alg_add_listening(cf, alg_port->port, &listen);
             if (rv == NGX_OK) {
                 if (listen) {
-                    listen->data_link = ngx_htbl_create(pscf->pool, &ops, NGX_HTBL_BUCKET_NUM,
-                        NGX_HTBL_BUCKET_ENTRIES, NGX_HTBL_MAX_CYCLE);
-                    if (!listen->data_link) {
-                        return NGX_ERROR;
-                    }
+                    listen->data_link = ctx;
                     alg_port->listen = listen;
                 }
             }

@@ -22,20 +22,34 @@
 
 static ngx_stream_alg_ctx_t alg_ctx;
 
+void *ngx_stream_alg_alloc(void *pool, size_t size)
+{
+    return ngx_slab_alloc((ngx_slab_pool_t *)pool, size);
+}
+
+void ngx_stream_alg_free(void *pool, void *p)
+{
+    ngx_slab_free((ngx_slab_pool_t *)pool, p);
+}
+
 uint32_t ngx_stream_alg_hash(void *key)
 {
     ngx_stream_alg_key_t *k = key;
-    return ngx_jhash_1word(k->ip, JHASH_INITVAL);
+    return ngx_jhash_3words(k->downstream_ip, k->listen_ip, k->listen_port, JHASH_INITVAL);
 }
 
 bool ngx_stream_alg_compare(void *key1, void *key2)
 {
     ngx_stream_alg_key_t *k1 = key1;
     ngx_stream_alg_key_t *k2 = key2;
-    if (k1->ip == k2->ip) {
-        return true;
+
+    if (k1->downstream_ip != k2->downstream_ip
+        || k1->listen_ip != k2->listen_ip
+        || k1->listen_port != k2->listen_port) {
+        return false;
     }
-    return false;
+
+    return true;
 }
 
 ngx_stream_alg_port_t * ngx_stream_alg_get_port(ngx_stream_session_t *s)
@@ -121,6 +135,7 @@ ngx_stream_alg_add_listening(ngx_conf_t *cf, ngx_uint_t port, ngx_listening_t **
     len = sizeof(struct sockaddr_in);
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
+    // TODO: specify the ip
     addr.sin_addr.s_addr = INADDR_ANY;
 
     ls = ngx_create_listening(cf, (struct sockaddr *)&addr, len);
@@ -163,15 +178,6 @@ ngx_stream_alg_add_listening(ngx_conf_t *cf, ngx_uint_t port, ngx_listening_t **
 #if (NGX_HAVE_REUSEPORT)
     ls->reuseport = 0;
 #endif
-
-    /**
-     * ls->servers is a complex struct generate at config phase. see stream
-     * proxy module 'listen' command.
-     *
-     * because data session is related to ctrl session, we just 'copy' ctrl
-     * session's ls->server to data session's ls->server. we deferred this
-     * task to the moment when a data session is negotiated.
-     */
 
     if (listen) {
         *listen = ls;
@@ -229,7 +235,7 @@ ngx_stream_alg_process_ftp(ngx_stream_session_t *s, ngx_buf_t *buffer)
     }
 
     cmd = buffer->pos;
-    if (!ngx_strstrn(cmd + total_len - 2, CRLF, 2)) {
+    if (!ngx_strstr(cmd + total_len - 2, CRLF)) {
         ngx_log_debug(NGX_LOG_DEBUG_STREAM, c->log, 0, "format error: CRLF not found");
         return NGX_AGAIN;
     }
@@ -261,6 +267,7 @@ ngx_stream_alg_process_ftp(ngx_stream_session_t *s, ngx_buf_t *buffer)
     if (ftp_mode) {
         ngx_stream_proxy_srv_conf_t *pscf;
         ngx_stream_alg_port_t *alg_port;
+        ngx_stream_alg_ctx_t *ctx;
         ngx_listening_t *ls;
         ngx_htbl_t *htbl;
 
@@ -270,7 +277,7 @@ ngx_stream_alg_process_ftp(ngx_stream_session_t *s, ngx_buf_t *buffer)
         unsigned int port2 = 0;        // proxy port
         uint32_t downstream_ip;
 
-        struct sockaddr_in addr;
+        struct sockaddr_in addr, *paddr;
         socklen_t len;
         u_char addr_str[INET_ADDRSTRLEN];
 
@@ -337,8 +344,8 @@ ngx_stream_alg_process_ftp(ngx_stream_session_t *s, ngx_buf_t *buffer)
             }
             port2 = alg_port->port;
             ls = alg_port->listen;
-            htbl = ls->data_link;
-            ls->servers = c->listening->servers;
+            ctx = ls->data_link;
+            htbl = ctx->htbl;
         } else {
             /**
              * TODO : system auto alloc.
@@ -352,18 +359,21 @@ ngx_stream_alg_process_ftp(ngx_stream_session_t *s, ngx_buf_t *buffer)
          * data-link.
          *      (downstream ctrl-link ip, listen) -> upstream address
          */
-        ngx_stream_alg_key_t *key = ngx_htbl_pcalloc(htbl, sizeof(ngx_stream_alg_key_t));
+        ngx_stream_alg_key_t *key = ngx_htbl_alloc(htbl, sizeof(ngx_stream_alg_key_t));
         if (!key) {
             ngx_log_error(NGX_LOG_ERR, c->log, 0, "no mem for alg key");
             return NGX_ERROR;
         }
-        ngx_stream_alg_val_t *val = ngx_htbl_pcalloc(htbl, sizeof(ngx_stream_alg_val_t));
+        ngx_stream_alg_val_t *val = ngx_htbl_alloc(htbl, sizeof(ngx_stream_alg_val_t));
         if (!val) {
-            ngx_htbl_pfree(htbl, key);
+            ngx_htbl_free(htbl, key);
             ngx_log_error(NGX_LOG_ERR, c->log, 0, "no mem for alg key");
             return NGX_ERROR;
         }
-        key->ip = downstream_ip;
+        key->downstream_ip = downstream_ip;
+        paddr = (struct sockaddr_in *)ls->sockaddr;
+        key->listen_ip = paddr->sin_addr.s_addr;
+        key->listen_port = paddr->sin_port;
 
         ngx_memzero(addr_str, INET_ADDRSTRLEN);
         ngx_snprintf(addr_str, INET_ADDRSTRLEN, "%ud.%ud.%ud.%ud", ip1[0], ip1[1], ip1[2], ip1[3]);
@@ -378,8 +388,8 @@ ngx_stream_alg_process_ftp(ngx_stream_session_t *s, ngx_buf_t *buffer)
 
         rv = ngx_htbl_insert(htbl, key, val);
         if (rv != NGX_OK) {
-            ngx_htbl_pfree(htbl, key);
-            ngx_htbl_pfree(htbl, val);
+            ngx_htbl_free(htbl, key);
+            ngx_htbl_free(htbl, val);
             return NGX_ERROR;
         }
 
@@ -415,8 +425,9 @@ static ngx_int_t
 ngx_stream_alg_process_opcda(ngx_stream_session_t *s, ngx_buf_t *buffer)
 {
     ngx_stream_alg_port_t *alg_port;
+    ngx_stream_alg_ctx_t *ctx;
     ngx_uint_t port;
-    struct sockaddr_in addr;
+    struct sockaddr_in addr, *paddr;
     socklen_t len;
     ngx_socket_t fd;
 
@@ -483,7 +494,8 @@ ngx_stream_alg_process_opcda(ngx_stream_session_t *s, ngx_buf_t *buffer)
             }
             port = alg_port->port;
             ls = alg_port->listen;
-            htbl = ls->data_link;
+            ctx = ls->data_link;
+            htbl = ctx->htbl;
         } else { // system auto alloc
             ngx_log_error(NGX_LOG_ERR, s->connection->log, 0, "not supported yet");
             return NGX_ERROR;
@@ -510,13 +522,13 @@ ngx_stream_alg_process_opcda(ngx_stream_session_t *s, ngx_buf_t *buffer)
         goto err;
     }
 
-    key = ngx_htbl_pcalloc(htbl, sizeof(ngx_stream_alg_key_t));
+    key = ngx_htbl_alloc(htbl, sizeof(ngx_stream_alg_key_t));
     if (!key) {
         ngx_log_error(NGX_LOG_ERR, s->connection->log, 0, "no memory");
         goto err;
     }
 
-    val = ngx_htbl_pcalloc(htbl, sizeof(ngx_stream_alg_val_t));
+    val = ngx_htbl_alloc(htbl, sizeof(ngx_stream_alg_val_t));
     if (!val) {
         ngx_log_error(NGX_LOG_ERR, s->connection->log, 0, "no memory");
         goto err;
@@ -529,7 +541,10 @@ ngx_stream_alg_process_opcda(ngx_stream_session_t *s, ngx_buf_t *buffer)
         ngx_log_error(NGX_LOG_ERR, s->connection->log, 0, "invalid socket fd");
         goto err;
     }
-    key->ip = addr.sin_addr.s_addr;
+    key->downstream_ip = addr.sin_addr.s_addr;
+    paddr = (struct sockaddr_in *)ls->sockaddr;
+    key->listen_ip = paddr->sin_addr.s_addr;
+    key->listen_port = paddr->sin_port;
 
     // resolve upstream address
     len = sizeof(struct sockaddr_in);
@@ -562,10 +577,10 @@ err:
         ngx_stream_alg_free_port(s);
     }
     if (key) {
-        ngx_htbl_pfree(htbl, key);
+        ngx_htbl_free(htbl, key);
     }
     if (val) {
-        ngx_htbl_pfree(htbl, val);
+        ngx_htbl_free(htbl, val);
     }
 
     return NGX_ERROR;
@@ -598,6 +613,12 @@ static ngx_int_t ngx_stream_alg_process(ngx_event_t *ev,
     if (!pscf) {
         ngx_log_error(NGX_LOG_ERR, c->log, NGX_EINVAL, "stream proxy srv conf null");
         return NGX_ERROR;
+    }
+
+    if (pscf->alg_proto != NGX_STREAM_ALG_PROTO_FTP
+        && pscf->alg_proto != NGX_STREAM_ALG_PROTO_OPC_CLASSIC) {
+        ngx_log_debug(NGX_LOG_DEBUG, c->log, 0, "jump over alg process");
+        return NGX_OK;
     }
 
     if (c->read->timedout) {
@@ -764,6 +785,10 @@ ngx_stream_alg_get_ctx(ngx_stream_session_t *s)
 {
     ngx_stream_alg_ctx_t *ctx;
 
+    if (!s) {
+        return &alg_ctx;
+    }
+
     ctx = ngx_stream_get_module_ctx(s, ngx_stream_alg_module);
     if (!ctx) {
         ctx = &alg_ctx;
@@ -780,10 +805,51 @@ ngx_stream_alg_handler(ngx_stream_session_t *s)
 }
 
 static ngx_int_t
+ngx_stream_alg_init_zone(ngx_shm_zone_t *shm_zone, void *data)
+{
+    ngx_stream_alg_ctx_t *octx = data;
+    ngx_stream_alg_ctx_t *ctx = shm_zone->data;
+    ngx_slab_pool_t *pool = (ngx_slab_pool_t *)shm_zone->shm.addr;
+    ngx_htbl_t *htbl;
+    ngx_htbl_ops_t ops;
+
+    if (octx) {
+        ctx->shm_zone = octx->shm_zone;
+        ctx->htbl = octx->htbl;
+
+        return NGX_OK;
+    }
+
+    if (shm_zone->shm.exists) {
+        ctx->htbl = pool->data;
+        return NGX_OK;
+    }
+
+    ops.alloc = ngx_stream_alg_alloc;
+    ops.free = ngx_stream_alg_free;
+    ops.hash = ngx_stream_alg_hash;
+    ops.compare = ngx_stream_alg_compare;
+
+    htbl = ngx_htbl_create(pool, &ops, NGX_HTBL_BUCKET_NUM,
+                        NGX_HTBL_BUCKET_ENTRIES, NGX_HTBL_MAX_CYCLE);
+    if (!htbl) {
+        return NGX_ERROR;
+    }
+
+    ctx->htbl = htbl;
+    pool->data = ctx->htbl;
+
+    return NGX_OK;
+}
+
+static ngx_int_t
 ngx_stream_alg_postconfiguration(ngx_conf_t *cf)
 {
     ngx_stream_handler_pt        *h;
     ngx_stream_core_main_conf_t  *cmcf;
+    ngx_shm_zone_t               *shm_zone;
+
+    ngx_str_t zone_name = ngx_string(ALG_SHMEM_ZONE_NAME);
 
     cmcf = ngx_stream_conf_get_module_main_conf(cf, ngx_stream_core_module);
 
@@ -799,6 +865,17 @@ ngx_stream_alg_postconfiguration(ngx_conf_t *cf)
     alg_ctx.alg_downstream_handler = ngx_stream_alg_downstream_handler;
     alg_ctx.ori_downstream_handler = NULL;
     alg_ctx.checkout_handler = ngx_stream_alg_checkout_handler;
+
+    shm_zone = ngx_shared_memory_add(cf, &zone_name, ALG_SHMEM_ZONE_SIZE,
+        &ngx_stream_alg_module);
+    if (!shm_zone) {
+        return NGX_ERROR;
+    }
+
+    shm_zone->init = ngx_stream_alg_init_zone;
+    shm_zone->data = &alg_ctx;
+
+    alg_ctx.shm_zone = shm_zone;
 
     // dcom_do_test();
 

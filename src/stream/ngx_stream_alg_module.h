@@ -65,7 +65,9 @@ typedef struct {
 
 // hash key for alg
 typedef struct {
-    uint32_t ip;                            /** downstream ip from ctrl-link */
+    uint32_t downstream_ip;
+    uint32_t listen_ip;
+    uint16_t listen_port;
 } ngx_stream_alg_key_t;
 
 // hash value for alg
@@ -75,7 +77,13 @@ typedef struct {
 } ngx_stream_alg_val_t;
 
 // context for alg
+#define ALG_SHMEM_ZONE_SIZE  (20 * 1024 * 1024)
+#define ALG_SHMEM_ZONE_NAME  "alg zone"
+
 typedef struct {
+    ngx_shm_zone_t *shm_zone;               /** shared memory zone for alg */
+    ngx_htbl_t *htbl;                       /** hash table for alg */
+
     ngx_event_handler_pt alg_upstream_handler;
     ngx_event_handler_pt ori_upstream_handler;
     ngx_event_handler_pt alg_downstream_handler;

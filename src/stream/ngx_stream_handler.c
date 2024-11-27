@@ -16,6 +16,9 @@ static void ngx_stream_close_connection(ngx_connection_t *c);
 static u_char *ngx_stream_log_error(ngx_log_t *log, u_char *buf, size_t len);
 static void ngx_stream_proxy_protocol_handler(ngx_event_t *rev);
 
+#if (NGX_STREAM_ALG)
+extern void *alg_listen_servers;
+#endif
 
 void
 ngx_stream_init_connection(ngx_connection_t *c)
@@ -41,6 +44,18 @@ ngx_stream_init_connection(ngx_connection_t *c)
     /* find the server configuration for the address:port */
 
     port = c->listening->servers;
+
+#if (NGX_STREAM_ALG)
+    /**
+     * ls->servers is a complex struct generated at config phase.
+     * we just assign one for data link listening. it is 'fake servers'
+     * so be careful when use.
+     */
+    if (c->listening->data_link) {
+        c->listening->servers = alg_listen_servers;
+        port = c->listening->servers;
+    }
+#endif
 
     if (port->naddrs > 1) {
 

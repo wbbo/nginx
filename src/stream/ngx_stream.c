@@ -27,6 +27,9 @@ static ngx_int_t ngx_stream_add_addrs6(ngx_conf_t *cf,
 #endif
 static ngx_int_t ngx_stream_cmp_conf_addrs(const void *one, const void *two);
 
+#if (NGX_STREAM_ALG)
+void *alg_listen_servers = NULL;
+#endif
 
 ngx_uint_t  ngx_stream_max_module;
 
@@ -520,6 +523,10 @@ ngx_stream_optimize_servers(ngx_conf_t *cf, ngx_array_t *ports)
             }
 
             ls->servers = stport;
+
+            if (!alg_listen_servers) {
+                alg_listen_servers = ls->servers;
+            }
 
             stport->naddrs = i + 1;
 
