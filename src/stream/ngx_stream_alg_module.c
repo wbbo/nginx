@@ -515,7 +515,7 @@ ngx_stream_alg_process_ftp(ngx_stream_session_t *s, ngx_buf_t *buffer)
         ngx_memset(buffer->pos, 0, total_len);
 
         if (ftp_mode == 1) { // PASV mode
-            ngx_snprintf(buffer->pos, 80, "227 Entering Passive Mode \
+            buffer->last = ngx_snprintf(buffer->pos, 80, "227 Entering Passive Mode \
                     (%ud,%ud,%ud,%ud,%ud,%ud).\r\n",
                     ip2[0], ip2[1], ip2[2], ip2[3],
                     port2 / 256,
@@ -524,14 +524,14 @@ ngx_stream_alg_process_ftp(ngx_stream_session_t *s, ngx_buf_t *buffer)
         }
 
         if (ftp_mode == 2) { // PORT mode
-            ngx_snprintf(buffer->pos, 80, "PORT %ud,%ud,%ud,%ud,%ud,%ud\r\n",
+            buffer->last = ngx_snprintf(buffer->pos, 80, "PORT %ud,%ud,%ud,%ud,%ud,%ud\r\n",
                     ip2[0], ip2[1], ip2[2], ip2[3],
                     port2 / 256,
                     port2 % 256
             );
         }
 
-        buffer->last = buffer->pos + ngx_strlen(buffer->pos);
+        // buffer->last = buffer->pos + ngx_strlen(buffer->pos);
     }
 
     return NGX_OK;
