@@ -1461,9 +1461,8 @@ objs/src/stream/ngx_stream_upstream_zone_module.o:	$(CORE_DEPS) $(STREAM_DEPS) \
 /home/jibo/idun/ISID_arm/thridsrc/openssl-1.0.2u//.openssl/include/openssl/ssl.h:	objs/Makefile
 	cd /home/jibo/idun/ISID_arm/thridsrc/openssl-1.0.2u/ \
 	&& if [ -f Makefile ]; then $(MAKE) clean; fi \
-	&& ./config --prefix=/home/jibo/idun/ISID_arm/thridsrc/openssl-1.0.2u//.openssl no-shared no-threads no-asm shared \
-	&& cp Makefile_nom64 Makefile &&   $(MAKE) \
-	&& $(MAKE) install_sw LIBDIR=lib
+	&& ./config no-asm shared  --cross-compile-prefix=/home/buildarm64/ft-yinhe-cross/host/usr/bin/aarch64-linux-gnu- \
+        && cp Makefile_nom64 Makefile && ftbuild  $(MAKE) && $(MAKE) install_sw LIBDIR=lib
 
 
 manpage:	objs/nginx.8
