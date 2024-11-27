@@ -38,7 +38,6 @@ static u_char *ngx_stream_proxy_log_error(ngx_log_t *log, u_char *buf,
 static void *ngx_stream_proxy_create_srv_conf(ngx_conf_t *cf);
 static char *ngx_stream_proxy_merge_srv_conf(ngx_conf_t *cf, void *parent,
     void *child);
-static ngx_int_t ngx_stream_proxy_postconfiguration(ngx_conf_t *cf);
 static char *ngx_stream_proxy_pass(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 static char *ngx_stream_proxy_bind(ngx_conf_t *cf, ngx_command_t *cmd,
@@ -377,7 +376,7 @@ static ngx_command_t  ngx_stream_proxy_commands[] = {
 
 static ngx_stream_module_t  ngx_stream_proxy_module_ctx = {
     NULL,                                  /* preconfiguration */
-    ngx_stream_proxy_postconfiguration,    /* postconfiguration */
+    NULL,                                  /* postconfiguration */
 
     NULL,                                  /* create main configuration */
     NULL,                                  /* init main configuration */
@@ -2305,6 +2304,53 @@ ngx_stream_proxy_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 
 #endif
 
+#if (NGX_STREAM_ALG)
+
+    if (!conf->alg_inited_once) {
+        ngx_queue_init(&conf->alg_port);
+
+        if ((conf->alg_port_min != NGX_CONF_UNSET_UINT) && (conf->alg_port_max != NGX_CONF_UNSET_UINT)) {
+            if (conf->alg_port_max >= conf->alg_port_min) {
+                ngx_stream_alg_port_t *node;
+                ngx_uint_t port;
+
+                for (port = conf->alg_port_min; port <= conf->alg_port_max; port++) {
+                    node = ngx_pcalloc(conf->pool, sizeof(ngx_stream_alg_port_t));
+                    if (!node) {
+                        break;
+                    }
+                    node->port = port;
+                    node->listen = NULL;
+                    ngx_queue_insert_tail(&conf->alg_port, &node->node);
+                }
+            }
+        }
+
+        conf->alg_inited_once = 1;
+    }
+
+    if (!ngx_queue_empty(&conf->alg_port)) {
+        ngx_stream_alg_ctx_t *ctx;
+        ngx_stream_alg_port_t *alg_port;
+        ngx_listening_t *listen;
+        ngx_int_t rv;
+
+        ctx = ngx_stream_alg_get_ctx(NULL);
+        ngx_queue_foreach_data(alg_port, &conf->alg_port, node) {
+            listen = NULL;
+
+            rv = ngx_stream_alg_add_listening(cf, alg_port->port, &listen);
+            if (rv == NGX_OK) {
+                if (listen) {
+                    listen->data_link = ctx;
+                    alg_port->listen = listen;
+                }
+            }
+        }
+    }
+
+#endif
+
     return NGX_CONF_OK;
 }
 
@@ -2393,66 +2439,6 @@ ngx_stream_proxy_set_ssl(ngx_conf_t *cf, ngx_stream_proxy_srv_conf_t *pscf)
 }
 
 #endif
-
-static ngx_int_t
-ngx_stream_proxy_postconfiguration(ngx_conf_t *cf)
-{
-#if (NGX_STREAM_ALG)
-
-    ngx_stream_proxy_srv_conf_t *pscf;
-    ngx_listening_t *listen;
-    ngx_stream_alg_port_t *alg_port;
-    ngx_stream_alg_ctx_t *ctx;
-    ngx_int_t rv;
-
-    pscf = ngx_stream_conf_get_module_srv_conf(cf, ngx_stream_proxy_module);
-    if (!pscf) {
-        return NGX_ERROR;
-    }
-
-    if (!pscf->alg_inited_once) {
-        ngx_queue_init(&pscf->alg_port);
-
-        if ((pscf->alg_port_min != NGX_CONF_UNSET_UINT) && (pscf->alg_port_max != NGX_CONF_UNSET_UINT)) {
-            if (pscf->alg_port_max >= pscf->alg_port_min) {
-                ngx_stream_alg_port_t *node;
-                ngx_uint_t port;
-
-                for (port = pscf->alg_port_min; port <= pscf->alg_port_max; port++) {
-                    node = ngx_pcalloc(pscf->pool, sizeof(ngx_stream_alg_port_t));
-                    if (!node) {
-                        break;
-                    }
-                    node->port = port;
-                    node->listen = NULL;
-                    ngx_queue_insert_tail(&pscf->alg_port, &node->node);
-                }
-            }
-        }
-
-        pscf->alg_inited_once = 1;
-    }
-
-    ctx = ngx_stream_alg_get_ctx(NULL);
-
-    if (!ngx_queue_empty(&pscf->alg_port)) {
-        ngx_queue_foreach_data(alg_port, &pscf->alg_port, node) {
-            listen = NULL;
-
-            rv = ngx_stream_alg_add_listening(cf, alg_port->port, &listen);
-            if (rv == NGX_OK) {
-                if (listen) {
-                    listen->data_link = ctx;
-                    alg_port->listen = listen;
-                }
-            }
-        }
-    }
-
-#endif
-    return NGX_OK;
-}
-
 
 static char *
 ngx_stream_proxy_pass(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
