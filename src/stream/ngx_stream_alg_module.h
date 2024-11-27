@@ -122,7 +122,7 @@ void
 ngx_stream_alg_finalize_child_session(ngx_stream_session_t *parent, void (*proxy_session_finalize)(ngx_stream_session_t *, ngx_uint_t));
 
 ngx_int_t
-ngx_stream_alg_add_listening(ngx_conf_t *cf, ngx_uint_t port, ngx_listening_t **listen);
+ngx_stream_alg_add_listening(ngx_conf_t *cf, ngx_uint_t ip, ngx_uint_t port, ngx_listening_t **listen);
 
 extern ngx_module_t ngx_stream_alg_module;
 

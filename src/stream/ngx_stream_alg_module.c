@@ -238,7 +238,7 @@ ngx_stream_alg_finalize_child_session(ngx_stream_session_t *parent, void (*proxy
 }
 
 ngx_int_t
-ngx_stream_alg_add_listening(ngx_conf_t *cf, ngx_uint_t port, ngx_listening_t **listen)
+ngx_stream_alg_add_listening(ngx_conf_t *cf, ngx_uint_t ip, ngx_uint_t port, ngx_listening_t **listen)
 {
     ngx_listening_t *ls;
     struct sockaddr_in addr;
@@ -248,7 +248,7 @@ ngx_stream_alg_add_listening(ngx_conf_t *cf, ngx_uint_t port, ngx_listening_t **
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
     // TODO: specify the ip
-    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_addr.s_addr = (ip == NGX_CONF_UNSET_UINT) ? INADDR_ANY : ip;
 
     ls = ngx_create_listening(cf, (struct sockaddr *)&addr, len);
     if (!ls) {

@@ -283,6 +283,7 @@ typedef struct {
 
 #if (NGX_STREAM_ALG)
     ngx_uint_t                      alg_proto;
+    ngx_uint_t                      alg_ip;
     ngx_uint_t                      alg_port_min;
     ngx_uint_t                      alg_port_max;
 

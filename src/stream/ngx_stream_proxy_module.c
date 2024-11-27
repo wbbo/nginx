@@ -73,6 +73,7 @@ static ngx_conf_post_t  ngx_stream_proxy_ssl_conf_command_post =
 #endif
 
 #if (NGX_STREAM_ALG)
+static char *ngx_stream_proxy_set_alg_ip(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
 static ngx_conf_enum_t ngx_stream_alg_proto_type[] = {
     // web
@@ -353,6 +354,13 @@ static ngx_command_t  ngx_stream_proxy_commands[] = {
       NGX_STREAM_SRV_CONF_OFFSET,
       offsetof(ngx_stream_proxy_srv_conf_t, alg_proto),
       ngx_stream_alg_proto_type },
+
+    { ngx_string("alg_ip"),
+      NGX_STREAM_MAIN_CONF|NGX_STREAM_SRV_CONF|NGX_CONF_TAKE1,
+      ngx_stream_proxy_set_alg_ip,
+      NGX_STREAM_SRV_CONF_OFFSET,
+      offsetof(ngx_stream_proxy_srv_conf_t, alg_ip),
+      NULL },
 
     { ngx_string("alg_port_min"),
       NGX_STREAM_MAIN_CONF|NGX_STREAM_SRV_CONF|NGX_CONF_TAKE1,
@@ -2199,6 +2207,7 @@ ngx_stream_proxy_create_srv_conf(ngx_conf_t *cf)
 
 #if (NGX_STREAM_ALG)
     conf->alg_proto = NGX_CONF_UNSET_UINT;
+    conf->alg_ip = NGX_CONF_UNSET_UINT;
     conf->alg_port_min = NGX_CONF_UNSET_UINT;
     conf->alg_port_max = NGX_CONF_UNSET_UINT;
     conf->alg_inited_once = 0;
@@ -2339,7 +2348,7 @@ ngx_stream_proxy_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
         ngx_queue_foreach_data(alg_port, &conf->alg_port, node) {
             listen = NULL;
 
-            rv = ngx_stream_alg_add_listening(cf, alg_port->port, &listen);
+            rv = ngx_stream_alg_add_listening(cf, conf->alg_ip, alg_port->port, &listen);
             if (rv == NGX_OK) {
                 if (listen) {
                     listen->data_link = ctx;
@@ -2436,6 +2445,25 @@ ngx_stream_proxy_set_ssl(ngx_conf_t *cf, ngx_stream_proxy_srv_conf_t *pscf)
     }
 
     return NGX_OK;
+}
+
+#endif
+
+#if (NGX_STREAM_ALG)
+
+static char *
+ngx_stream_proxy_set_alg_ip(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_stream_proxy_srv_conf_t *pscf = conf;
+
+    ngx_str_t *value, *url;
+
+    value = cf->args->elts;
+    url = &value[1];
+
+    pscf->alg_ip = (ngx_uint_t)ngx_inet_addr(url->data, url->len);
+
+    return NGX_CONF_OK;
 }
 
 #endif
