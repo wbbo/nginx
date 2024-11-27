@@ -1,6 +1,6 @@
 
 CC =	cc
-CFLAGS =  -pipe  -O -W -Wall -Wpointer-arith -Wno-unused-parameter -Werror -g
+CFLAGS =  -pipe  -O -W -Wall -Wpointer-arith -Wno-unused-parameter -Werror -g 
 CPP =	cc -E
 LINK =	$(CC)
 
@@ -9,7 +9,7 @@ ALL_INCS = -I src/core \
 	-I src/event \
 	-I src/event/modules \
 	-I src/os/unix \
-	-I /home/jibo/idun/ISID_arm/thridsrc/openssl-1.0.2u//.openssl/include \
+	-I /home/jibo/idun/ISID_arm-ft/thridsrc/openssl-1.0.2u//.openssl/include \
 	-I objs \
 	-I src/http \
 	-I src/http/modules \
@@ -80,7 +80,7 @@ CORE_DEPS = src/core/nginx.h \
 	src/os/unix/ngx_linux.h \
 	src/event/ngx_event_openssl.h \
 	src/core/ngx_regex.h \
-	/home/jibo/idun/ISID_arm/thridsrc/openssl-1.0.2u//.openssl/include/openssl/ssl.h \
+	/home/jibo/idun/ISID_arm-ft/thridsrc/openssl-1.0.2u//.openssl/include/openssl/ssl.h \
 	objs/ngx_auto_config.h
 
 
@@ -88,7 +88,7 @@ CORE_INCS = -I src/core \
 	-I src/event \
 	-I src/event/modules \
 	-I src/os/unix \
-	-I /home/jibo/idun/ISID_arm/thridsrc/openssl-1.0.2u//.openssl/include \
+	-I /home/jibo/idun/ISID_arm-ft/thridsrc/openssl-1.0.2u//.openssl/include \
 	-I objs
 
 
@@ -422,9 +422,9 @@ objs/nginx:	objs/src/core/nginx.o \
 	objs/src/stream/ngx_stream_upstream_random_module.o \
 	objs/src/stream/ngx_stream_upstream_zone_module.o \
 	objs/ngx_modules.o \
-	-ldl -lpthread -lcrypt -lpcre /home/jibo/idun/ISID_arm/thridsrc/openssl-1.0.2u//.openssl/lib/libssl.a /home/jibo/idun/ISID_arm/thridsrc/openssl-1.0.2u//.openssl/lib/libcrypto.a -ldl -lpthread -lz \
+	-ldl -lpthread -lcrypt -lpcre /home/jibo/idun/ISID_arm-ft/thridsrc/openssl-1.0.2u//.openssl/lib/libssl.a /home/jibo/idun/ISID_arm-ft/thridsrc/openssl-1.0.2u//.openssl/lib/libcrypto.a -ldl -lpthread -lz \
 	-Wl,-E
-
+	
 
 
 modules:
@@ -1458,11 +1458,11 @@ objs/src/stream/ngx_stream_upstream_zone_module.o:	$(CORE_DEPS) $(STREAM_DEPS) \
 		src/stream/ngx_stream_upstream_zone_module.c
 
 
-/home/jibo/idun/ISID_arm/thridsrc/openssl-1.0.2u//.openssl/include/openssl/ssl.h:	objs/Makefile
-	cd /home/jibo/idun/ISID_arm/thridsrc/openssl-1.0.2u/ \
+/home/jibo/idun/ISID_arm-ft/thridsrc/openssl-1.0.2u//.openssl/include/openssl/ssl.h:	objs/Makefile
+	cd /home/jibo/idun/ISID_arm-ft/thridsrc/openssl-1.0.2u/ \
 	&& if [ -f Makefile ]; then $(MAKE) clean; fi \
 	&& ./config no-asm shared  --cross-compile-prefix=/home/buildarm64/ft-yinhe-cross/host/usr/bin/aarch64-linux-gnu- \
-        && cp Makefile_nom64 Makefile && ftbuild  $(MAKE) && $(MAKE) install_sw LIBDIR=lib
+        && cp Makefile_nom64_arm-ft Makefile && ftbuild  $(MAKE) && $(MAKE) install_sw LIBDIR=lib
 
 
 manpage:	objs/nginx.8
@@ -1474,7 +1474,7 @@ objs/nginx.8:	man/nginx.8 objs/ngx_auto_config.h
 		-e "s|%%ERROR_LOG_PATH%%|/var/log/opt/nsfocus/bin/nsproxy_error.log|" \
 		< man/nginx.8 > $@
 
-install:	build
+install:	build 
 	test -d '$(DESTDIR)/opt/nsfocus/service/proxy/' || mkdir -p '$(DESTDIR)/opt/nsfocus/service/proxy/'
 
 	test -d '$(DESTDIR)/opt/nsfocus/service/proxy//sbin' \
