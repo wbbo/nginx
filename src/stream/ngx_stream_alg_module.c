@@ -295,6 +295,7 @@ ngx_stream_alg_add_listening(ngx_conf_t *cf, ngx_uint_t ip, ngx_uint_t port, ngx
 
     ls->data_link = NULL;
     ls->parent = NULL;
+    ls->conf_ctx = cf->ctx;
 
     if (listen) {
         *listen = ls;

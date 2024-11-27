@@ -58,6 +58,7 @@ struct ngx_listening_s {
 
     void               *data_link; /** ngx_stream_alg_ctx_t */
     void               *parent;    /** ngx_stream_session_t */
+    void               *conf_ctx;  /** ngx_stream_conf_ctx_t */
 
 #endif
 

@@ -46,25 +46,10 @@ ngx_stream_init_connection(ngx_connection_t *c)
     port = c->listening->servers;
 
 #if (NGX_STREAM_ALG)
-    /**
-     * ls->servers is a complex struct generated at config phase.
-     * we just assign one for data link listening. it is 'fake servers'
-     * so be careful when use.
-     */
-    if (c->listening->data_link) {
-        c->listening->servers = alg_listen_servers;
-        port = c->listening->servers;
+    ngx_stream_conf_ctx_t *conf_ctx = NULL;
+    addr_conf = NULL;
 
-        /**
-         * FIXME:
-         * limit the naddrs to avoid segment fault.
-         */
-        if (!port || port->naddrs != 1) {
-            ngx_stream_close_connection(c);
-            alg_listen_servers = NULL;
-            return;
-        }
-    }
+    if (!c->listening->data_link) { // not data link
 #endif
 
     if (port->naddrs > 1) {
@@ -140,6 +125,14 @@ ngx_stream_init_connection(ngx_connection_t *c)
         }
     }
 
+#if (NGX_STREAM_ALG)
+    }
+
+    else { // data link
+        conf_ctx = (ngx_stream_conf_ctx_t *)c->listening->conf_ctx;
+    }
+#endif
+
     s = ngx_pcalloc(c->pool, sizeof(ngx_stream_session_t));
     if (s == NULL) {
         ngx_stream_close_connection(c);
@@ -147,11 +140,42 @@ ngx_stream_init_connection(ngx_connection_t *c)
     }
 
     s->signature = NGX_STREAM_MODULE;
+
+#if (NGX_STREAM_ALG)
+    if (!c->listening->data_link) { // not data link
+#endif
+
     s->main_conf = addr_conf->ctx->main_conf;
     s->srv_conf = addr_conf->ctx->srv_conf;
 
+#if (NGX_STREAM_ALG)
+    }
+
+    else { // data link
+        /**
+         * data link don't alloc ngx_stream_port_t struct at config phase,
+         * be careful with that.
+         */
+        s->main_conf = conf_ctx->main_conf;
+        s->srv_conf = conf_ctx->srv_conf;
+    }
+#endif
+
+
+#if (NGX_STREAM_ALG)
+    if (!c->listening->data_link) { // not data link
+#endif
+
 #if (NGX_STREAM_SSL)
     s->ssl = addr_conf->ssl;
+#endif
+
+#if (NGX_STREAM_ALG)
+    }
+
+    else { // data link
+        s->ssl = 0;
+    }
 #endif
 
 #if (NGX_STREAM_ALG)
@@ -173,9 +197,17 @@ ngx_stream_init_connection(ngx_connection_t *c)
 
     len = ngx_sock_ntop(c->sockaddr, c->socklen, text, NGX_SOCKADDR_STRLEN, 1);
 
+#if (NGX_STREAM_ALG)
+    if (!c->listening->data_link) { // not data link
+#endif
+
     ngx_log_error(NGX_LOG_INFO, c->log, 0, "*%uA %sclient %*s connected to %V",
                   c->number, c->type == SOCK_DGRAM ? "udp " : "",
                   len, text, &addr_conf->addr_text);
+
+#if (NGX_STREAM_ALG)
+    }
+#endif
 
     c->log->connection = c->number;
     c->log->handler = ngx_stream_log_error;
@@ -207,6 +239,10 @@ ngx_stream_init_connection(ngx_connection_t *c)
     rev = c->read;
     rev->handler = ngx_stream_session_handler;
 
+#if (NGX_STREAM_ALG)
+    if (!c->listening->data_link) { // not data link
+#endif
+
     if (addr_conf->proxy_protocol) {
         c->log->action = "reading PROXY protocol";
 
@@ -223,6 +259,10 @@ ngx_stream_init_connection(ngx_connection_t *c)
             return;
         }
     }
+
+#if (NGX_STREAM_ALG)
+    }
+#endif
 
     if (ngx_use_accept_mutex) {
         ngx_post_event(rev, &ngx_posted_events);
