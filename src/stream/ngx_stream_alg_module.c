@@ -20,6 +20,8 @@
 
 #include <packet-dcom.h>
 
+static ngx_stream_alg_ctx_t alg_ctx;
+
 uint32_t ngx_stream_alg_hash(void *key)
 {
     ngx_stream_alg_key_t *k = key;
@@ -689,19 +691,13 @@ static ngx_int_t ngx_stream_alg_process(ngx_event_t *ev,
 
 static void ngx_stream_alg_upstream_handler(ngx_event_t *ev)
 {
-    ngx_stream_alg_main_conf_t *mcf;
+    ngx_stream_alg_ctx_t *ctx;
     ngx_int_t rc;
     ngx_connection_t *c;
     ngx_stream_session_t *s;
 
     c = ev->data;
     s = c->data;
-
-    mcf = ngx_stream_get_module_main_conf(s, ngx_stream_alg_module);
-    if (!mcf) {
-        ngx_log_error(NGX_LOG_ERR, c->log, NGX_ENOENT, "stream alg module main conf null");
-        return;
-    }
 
     rc = ngx_stream_alg_process(ev, NGX_STREAM_ALG_UPSTREAM);
     if (rc != NGX_OK) {
@@ -709,13 +705,16 @@ static void ngx_stream_alg_upstream_handler(ngx_event_t *ev)
         return;
     }
 
-    mcf->alg_post_upstream_handler(ev);
+    ctx = ngx_stream_alg_get_ctx(s);
+    ctx->ori_upstream_handler(ev);
+
     return;
 }
 
-static void ngx_stream_alg_downstream_handler(ngx_event_t *ev)
+static void
+ngx_stream_alg_downstream_handler(ngx_event_t *ev)
 {
-    ngx_stream_alg_main_conf_t *mcf;
+    ngx_stream_alg_ctx_t *ctx;
     ngx_int_t rc;
     ngx_connection_t *c;
     ngx_stream_session_t *s;
@@ -723,88 +722,60 @@ static void ngx_stream_alg_downstream_handler(ngx_event_t *ev)
     c = ev->data;
     s = c->data;
 
-    mcf = ngx_stream_get_module_main_conf(s, ngx_stream_alg_module);
-    if (!mcf) {
-        ngx_log_error(NGX_LOG_ERR, c->log, NGX_ENOENT, "stream alg module main conf null");
-        return;
-    }
-
     rc = ngx_stream_alg_process(ev, NGX_STREAM_ALG_DOWNSTREAM);
     if (rc != NGX_OK) {
         ngx_log_error(NGX_LOG_ERR, c->log, 0, "ngx stream alg process downstream failed");
         return;
     }
 
-    mcf->alg_post_downstream_handler(ev);
+    ctx = ngx_stream_alg_get_ctx(s);
+    ctx->ori_downstream_handler(ev);
+
     return;
 }
 
-static ngx_event_handler_pt ngx_stream_alg_checkout_handler(
-        ngx_stream_session_t *s,
-        ngx_event_handler_pt alg_post_handler,
+static ngx_event_handler_pt
+ngx_stream_alg_checkout_handler(ngx_stream_session_t *s, ngx_event_handler_pt handler,
         ngx_int_t up_down)
 {
-    ngx_stream_alg_main_conf_t *mcf;
+    ngx_stream_alg_ctx_t *ctx;
 
-    mcf = ngx_stream_get_module_main_conf(s,ngx_stream_alg_module);
-    if (!mcf) {
-        ngx_log_error(NGX_LOG_ERR, s->connection->log, NGX_ENOENT, "stream alg module main conf null");
-        return NULL;
-    }
+    ctx = ngx_stream_alg_get_ctx(s);
 
     if (up_down == NGX_STREAM_ALG_DOWNSTREAM) {
-        mcf->alg_post_downstream_handler = alg_post_handler;
-        return mcf->alg_downstream_handler;
-    } else {
-        mcf->alg_post_upstream_handler = alg_post_handler;
-        return mcf->alg_upstream_handler;
+        if (!ctx->ori_downstream_handler) {
+            ctx->ori_downstream_handler = handler;
+        }
+        return ctx->alg_downstream_handler;
     }
+
+    if (up_down == NGX_STREAM_ALG_UPSTREAM) {
+        if (!ctx->ori_upstream_handler) {
+            ctx->ori_upstream_handler = handler;
+        }
+        return ctx->alg_upstream_handler;
+    }
+
     return NULL;
 }
 
-static void *
-ngx_stream_alg_create_main_conf(ngx_conf_t *cf)
+ngx_stream_alg_ctx_t *
+ngx_stream_alg_get_ctx(ngx_stream_session_t *s)
 {
-    ngx_stream_alg_main_conf_t *mcf;
+    ngx_stream_alg_ctx_t *ctx;
 
-    mcf = ngx_pcalloc(cf->pool, sizeof(ngx_stream_alg_main_conf_t));
-    if (!mcf) {
-        return NULL;
+    ctx = ngx_stream_get_module_ctx(s, ngx_stream_alg_module);
+    if (!ctx) {
+        ctx = &alg_ctx;
+        ngx_stream_set_ctx(s, ctx, ngx_stream_alg_module);
     }
 
-    mcf->alg_upstream_handler = ngx_stream_alg_upstream_handler;
-    mcf->alg_downstream_handler = ngx_stream_alg_downstream_handler;
-    mcf->alg_checkout_stream_handler = ngx_stream_alg_checkout_handler;
-    return mcf;
+    return ctx;
 }
 
 static ngx_int_t
 ngx_stream_alg_handler(ngx_stream_session_t *s)
 {
-    ngx_stream_alg_ctx_t *ctx;
-    ngx_connection_t *c;
-    ngx_listening_t *ls;
-
-    c = s->connection;
-    if (c->type != SOCK_STREAM) {
-        ngx_log_error(NGX_LOG_ERR, c->log, 0, "not tcp stream");
-        return NGX_DECLINED;
-    }
-
-    ls = c->listening;
-    if (!ls->data_link) { // ctrl session
-        ctx = ngx_stream_get_module_ctx(s, ngx_stream_alg_module);
-        if (!ctx) {
-            ctx = ngx_pcalloc(c->pool, sizeof(ngx_stream_alg_ctx_t));
-            if (!ctx) {
-                ngx_log_error(NGX_LOG_ERR, c->log, NGX_ENOMEM, "no memory");
-                return NGX_ERROR;
-            }
-
-            ngx_stream_set_ctx(s, ctx, ngx_stream_alg_module);
-        }
-    }
-
     return NGX_OK;
 }
 
@@ -823,6 +794,12 @@ ngx_stream_alg_postconfiguration(ngx_conf_t *cf)
 
     *h = ngx_stream_alg_handler;
 
+    alg_ctx.alg_upstream_handler = ngx_stream_alg_upstream_handler;
+    alg_ctx.ori_upstream_handler = NULL;
+    alg_ctx.alg_downstream_handler = ngx_stream_alg_downstream_handler;
+    alg_ctx.ori_downstream_handler = NULL;
+    alg_ctx.checkout_handler = ngx_stream_alg_checkout_handler;
+
     // dcom_do_test();
 
     return NGX_OK;
@@ -833,12 +810,12 @@ static ngx_command_t ngx_stream_alg_commands[] = {
 };
 
 static ngx_stream_module_t ngx_stream_alg_module_ctx = {
-    NULL,                                /* preconfiguration */
-    ngx_stream_alg_postconfiguration,    /* postconfiguration */
-    ngx_stream_alg_create_main_conf,     /* create main conf */
-    NULL,                                /* init main conf */
-    NULL,                                /* create server conf */
-    NULL,                                /* merge server conf */
+    NULL,                                  /* preconfiguration */
+    ngx_stream_alg_postconfiguration,      /* postconfiguration */
+    NULL,                                  /* create main conf */
+    NULL,                                  /* init main conf */
+    NULL,                                  /* create server conf */
+    NULL,                                  /* merge server conf */
 };
 
 ngx_module_t ngx_stream_alg_module = {

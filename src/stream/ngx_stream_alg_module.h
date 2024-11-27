@@ -56,45 +56,35 @@
 #define NGX_STREAM_ALG_PROTO_BACNET      (NGX_STREAM_ALG_PROTO_INDUSTRIAL + 10)
 #define NGX_STREAM_ALG_PROTO_ETHERNET_IP (NGX_STREAM_ALG_PROTO_INDUSTRIAL + 11)
 
-typedef ngx_event_handler_pt (*ngx_stream_alg_checkout_handler_pt) (
-        ngx_stream_session_t *s,
-        ngx_event_handler_pt alg_post_handler,
-        ngx_int_t up_down
-        );
-
-
-/**
- * user defined listening port for data-link.
- */
+// user defiend listening port for alg
 typedef struct {
-    ngx_uint_t port;           /** data-link port */
-    ngx_queue_t node;          /** queue link */
-    ngx_listening_t *listen;   /** listening on this port */
+    ngx_uint_t port;                        /** port */
+    ngx_queue_t node;                       /** queue link */
+    ngx_listening_t *listen;                /** listening on this port */
 } ngx_stream_alg_port_t;
 
-/**
- * hash key and value for alg module.
- */
+// hash key for alg
 typedef struct {
-    uint32_t ip;               /** downstream ip from ctrl-link */
+    uint32_t ip;                            /** downstream ip from ctrl-link */
 } ngx_stream_alg_key_t;
 
+// hash value for alg
 typedef struct {
-    ngx_stream_upstream_resolved_t peer;   /** resolved upstream */
-    struct sockaddr_in addr;               /** upstream address */
+    ngx_stream_upstream_resolved_t peer;    /** resolved upstream */
+    struct sockaddr_in addr;                /** upstream address */
 } ngx_stream_alg_val_t;
 
+// context for alg
 typedef struct {
     ngx_event_handler_pt alg_upstream_handler;
+    ngx_event_handler_pt ori_upstream_handler;
     ngx_event_handler_pt alg_downstream_handler;
-    ngx_event_handler_pt alg_post_upstream_handler;
-    ngx_event_handler_pt alg_post_downstream_handler;
-    ngx_stream_alg_checkout_handler_pt alg_checkout_stream_handler;
-} ngx_stream_alg_main_conf_t;
-
-typedef struct {
-    ngx_stream_upstream_resolved_t *alg_resolved_peer;
+    ngx_event_handler_pt ori_downstream_handler;
+    ngx_event_handler_pt (*checkout_handler)(ngx_stream_session_t *s, ngx_event_handler_pt handler, ngx_int_t up_down);
 } ngx_stream_alg_ctx_t;
+
+ngx_stream_alg_ctx_t *
+ngx_stream_alg_get_ctx(ngx_stream_session_t *s);
 
 ngx_stream_alg_port_t *
 ngx_stream_alg_get_port(ngx_stream_session_t *s);

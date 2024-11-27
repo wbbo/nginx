@@ -460,7 +460,7 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
 
 #if (NGX_STREAM_ALG)
 
-    ngx_stream_alg_main_conf_t *amcf;
+    ngx_stream_alg_ctx_t *alg_ctx;
     ngx_listening_t *ls;
     ngx_htbl_t *htbl;
 
@@ -468,20 +468,19 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
     htbl = ls->data_link;
 
     if (!htbl) { // ctrl session
-        amcf = ngx_stream_get_module_main_conf(s, ngx_stream_alg_module);
-        if (amcf) {
-            c->write->handler =
-                amcf->alg_checkout_stream_handler(s,
-                    ngx_stream_proxy_downstream_handler,
-                    NGX_STREAM_ALG_DOWNSTREAM
-                );
+        alg_ctx = ngx_stream_alg_get_ctx(s);
 
-            c->read->handler =
-                amcf->alg_checkout_stream_handler(s,
-                    ngx_stream_proxy_downstream_handler,
-                    NGX_STREAM_ALG_DOWNSTREAM
-                );
-        }
+        c->write->handler =
+            alg_ctx->checkout_handler(s,
+                ngx_stream_proxy_downstream_handler,
+                NGX_STREAM_ALG_DOWNSTREAM
+            );
+
+        c->read->handler =
+            alg_ctx->checkout_handler(s,
+                ngx_stream_proxy_downstream_handler,
+                NGX_STREAM_ALG_DOWNSTREAM
+            );
     }
 
 #endif
@@ -1032,27 +1031,25 @@ ngx_stream_proxy_init_upstream(ngx_stream_session_t *s)
 
 #if (NGX_STREAM_ALG)
 
-    ngx_stream_alg_main_conf_t *amcf;
+    ngx_stream_alg_ctx_t *alg_ctx;
     ngx_listening_t *ls;
 
     ls = c->listening;
     if (!ls->data_link) { // ctrl session
-        amcf = ngx_stream_get_module_main_conf(s,ngx_stream_alg_module);
-        if (amcf) {
-            if (amcf) {
-                pc->write->handler =
-                    amcf->alg_checkout_stream_handler(s,
-                        ngx_stream_proxy_upstream_handler,
-                        NGX_STREAM_ALG_UPSTREAM
-                    );
+        alg_ctx = ngx_stream_alg_get_ctx(s);
 
-                pc->read->handler =
-                    amcf->alg_checkout_stream_handler(s,
-                        ngx_stream_proxy_upstream_handler,
-                        NGX_STREAM_ALG_UPSTREAM
-                    );
-            }
-        }
+        pc->write->handler =
+            alg_ctx->checkout_handler(s,
+                ngx_stream_proxy_upstream_handler,
+                NGX_STREAM_ALG_UPSTREAM
+            );
+
+        pc->read->handler =
+            alg_ctx->checkout_handler(s,
+                ngx_stream_proxy_upstream_handler,
+                NGX_STREAM_ALG_UPSTREAM
+            );
+
     }
 
 #endif
