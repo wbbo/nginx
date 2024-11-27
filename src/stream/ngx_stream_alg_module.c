@@ -457,7 +457,14 @@ ngx_stream_alg_process_ftp(ngx_stream_session_t *s, ngx_buf_t *buffer)
              * close until the process exit. see stream proxy module
              * postconfiguration.
              */
-            alg_port = ngx_stream_alg_get_port(s);
+alg_port_occupy:
+	        if (ngx_shmtx_trylock(&alg_relation_mutex)) {
+				alg_port = ngx_stream_alg_get_port(s);
+				ngx_shmtx_unlock(&alg_relation_mutex);
+	    	} else {
+				alg_port = ngx_stream_alg_get_port(s);
+			}
+
             if (!alg_port) {
                 ngx_log_error(NGX_LOG_ERR, c->log, 0, "no alg port available");
                 return NGX_ERROR;
@@ -508,6 +515,37 @@ ngx_stream_alg_process_ftp(ngx_stream_session_t *s, ngx_buf_t *buffer)
         val->peer.naddrs = 1;
         val->peer.port = htons(port1);
         val->peer.no_port = 0;
+
+		ngx_htbl_elm_t *elm;
+		uint32_t index;
+		uint64_t cycle;
+		bool success;
+		cycle = time(0);
+		success = true;
+		index = htbl->ops.hash(key);
+		elm = NGX_HTBL_POS(htbl, index);
+		for (index = 0; index < htbl->bucket_entries; index++) {
+			if (elm->flag == NGX_HTBL_FLAG_FREE) {
+				success = false;
+				break;
+			}
+			else {
+				if (htbl->max_cycles && (cycle - elm->cycle > htbl->max_cycles)) {
+					success = false;
+					break;
+				}
+				if (htbl->ops.compare(key, elm->key)) {
+					break;
+				}
+			}
+			elm += 1;
+		}
+		if (success) {
+			ngx_htbl_free(htbl, key);
+            ngx_htbl_free(htbl, val);
+			NGX_PRINT("alg_port_occupy");
+			goto alg_port_occupy;
+        }
 
         rv = ngx_htbl_insert(htbl, key, val);
         if (rv != NGX_OK) {
