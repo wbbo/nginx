@@ -80,15 +80,20 @@ typedef struct {
 typedef struct {
     ngx_stream_upstream_resolved_t peer;    /** resolved upstream */
     struct sockaddr_in addr;                /** upstream address */
+    uint32_t conn_id;                       /** connection id */
 } ngx_stream_alg_val_t;
 
 // context for alg
 #define ALG_SHMEM_ZONE_SIZE  (20 * 1024 * 1024)
 #define ALG_SHMEM_ZONE_NAME  "alg zone"
+#define ALG_SHMEM_RELATION_SIZE (20 * 1024 * 1024)
+#define ALG_SHMEM_RELATION_NAME "alg relation"
 
 typedef struct {
     ngx_shm_zone_t *shm_zone;               /** shared memory zone for alg */
     ngx_htbl_t *htbl;                       /** hash table for alg */
+    ngx_shm_zone_t *relation;
+    uint32_t *childs;
 
     ngx_event_handler_pt alg_upstream_handler;
     ngx_event_handler_pt ori_upstream_handler;

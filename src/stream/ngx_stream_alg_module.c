@@ -685,6 +685,7 @@ ngx_stream_alg_process_opcda(ngx_stream_session_t *s, ngx_buf_t *buffer)
     val->peer.naddrs = 1;
     val->peer.port = htons(d.oport);
     val->peer.no_port = 0;
+    val->conn_id = s->connection->id;
 
     rv = ngx_htbl_insert(htbl, key, val);
     if (rv !=  NGX_OK) {
@@ -713,7 +714,7 @@ err:
     return NGX_ERROR;
 }
 
-static ngx_int_t ngx_stream_alg_process(ngx_event_t *ev, 
+static ngx_int_t ngx_stream_alg_process(ngx_event_t *ev,
         ngx_int_t stream_direction)
 {
     ngx_connection_t *c;
@@ -725,11 +726,11 @@ static ngx_int_t ngx_stream_alg_process(ngx_event_t *ev,
     ngx_int_t rc;
     ngx_stream_core_srv_conf_t *cscf;
     ngx_stream_proxy_srv_conf_t *pscf;
-    
+
     c = ev->data;
     s = c->data;
     u = s->upstream;
-    
+
     cscf = ngx_stream_get_module_srv_conf(s, ngx_stream_core_module);
     if (!cscf) {
         ngx_log_error(NGX_LOG_ERR, c->log, NGX_EINVAL, "stream core srv conf null");
@@ -752,7 +753,7 @@ static ngx_int_t ngx_stream_alg_process(ngx_event_t *ev,
     } else if (c->read->timer_set) {
     } else {
     }
-    
+
     if (!c->buffer) {
         c->buffer = ngx_create_temp_buf(c->pool, cscf->preread_buffer_size);
         if (!c->buffer) {
@@ -776,7 +777,7 @@ static ngx_int_t ngx_stream_alg_process(ngx_event_t *ev,
         ngx_log_debug(NGX_LOG_DEBUG, c->log, 0, "read not ready");
         return NGX_OK;
     }
-    
+
     n = c->recv(c, c->buffer->last, size);
     if (n == NGX_ERROR || n == 0) {
         if (ngx_handle_read_event(c->read, NGX_CLOSE_EVENT) != NGX_OK) {
@@ -795,7 +796,7 @@ static ngx_int_t ngx_stream_alg_process(ngx_event_t *ev,
 
     /**
      * only OPC_CLASSIC and FTP has dynamic port, other alg_proto
-     * just let pass. 
+     * just let pass.
      */
 
     if (pscf->alg_proto == NGX_STREAM_ALG_PROTO_FTP) {
@@ -812,7 +813,7 @@ static ngx_int_t ngx_stream_alg_process(ngx_event_t *ev,
             return rc;
         }
     }
-    
+
     if (c->buffer && c->buffer->pos < c->buffer->last) {
         chain = ngx_chain_get_free_buf(c->pool, &u->free);
         if (!chain) {
@@ -843,7 +844,7 @@ static void ngx_stream_alg_upstream_handler(ngx_event_t *ev)
     ngx_int_t rc;
     ngx_connection_t *c;
     ngx_stream_session_t *s;
-    
+
     c = ev->data;
     s = c->data;
 
@@ -855,18 +856,18 @@ static void ngx_stream_alg_upstream_handler(ngx_event_t *ev)
 
     ctx = ngx_stream_alg_get_ctx(s);
     ctx->ori_upstream_handler(ev);
-    
+
     return;
 }
 
-static void 
+static void
 ngx_stream_alg_downstream_handler(ngx_event_t *ev)
 {
     ngx_stream_alg_ctx_t *ctx;
     ngx_int_t rc;
     ngx_connection_t *c;
     ngx_stream_session_t *s;
-    
+
     c = ev->data;
     s = c->data;
 
@@ -882,12 +883,12 @@ ngx_stream_alg_downstream_handler(ngx_event_t *ev)
     return;
 }
 
-static ngx_event_handler_pt 
-ngx_stream_alg_checkout_handler(ngx_stream_session_t *s, ngx_event_handler_pt handler, 
+static ngx_event_handler_pt
+ngx_stream_alg_checkout_handler(ngx_stream_session_t *s, ngx_event_handler_pt handler,
         ngx_int_t up_down)
 {
     ngx_stream_alg_ctx_t *ctx;
-    
+
     ctx = ngx_stream_alg_get_ctx(s);
 
     if (up_down == NGX_STREAM_ALG_DOWNSTREAM) {
@@ -895,7 +896,7 @@ ngx_stream_alg_checkout_handler(ngx_stream_session_t *s, ngx_event_handler_pt ha
             ctx->ori_downstream_handler = handler;
         }
         return ctx->alg_downstream_handler;
-    } 
+    }
 
     if (up_down == NGX_STREAM_ALG_UPSTREAM) {
         if (!ctx->ori_upstream_handler) {
@@ -925,9 +926,27 @@ ngx_stream_alg_get_ctx(ngx_stream_session_t *s)
     return ctx;
 }
 
-static ngx_int_t 
+static ngx_int_t
 ngx_stream_alg_handler(ngx_stream_session_t *s)
 {
+    return NGX_OK;
+}
+
+static ngx_int_t
+ngx_stream_alg_init_relation(ngx_shm_zone_t *shm_zone, void *data)
+{
+    ngx_stream_alg_ctx_t *octx = data;
+    ngx_stream_alg_ctx_t *ctx = shm_zone->data;
+    uint32_t *childs = (uint32_t *)shm_zone->shm.addr;
+
+    if (octx) {
+        ctx->relation = octx->relation;
+        ctx->childs = octx->childs;
+
+        return NGX_OK;
+    }
+
+    ctx->childs = childs;
     return NGX_OK;
 }
 
@@ -969,13 +988,15 @@ ngx_stream_alg_init_zone(ngx_shm_zone_t *shm_zone, void *data)
     return NGX_OK;
 }
 
-static ngx_int_t 
+static ngx_int_t
 ngx_stream_alg_postconfiguration(ngx_conf_t *cf)
 {
     ngx_stream_handler_pt        *h;
     ngx_stream_core_main_conf_t  *cmcf;
     ngx_shm_zone_t               *shm_zone;
+    ngx_shm_zone_t               *relation;
 
+    ngx_str_t relation_name = ngx_string(ALG_SHMEM_RELATION_NAME);
     ngx_str_t zone_name = ngx_string(ALG_SHMEM_ZONE_NAME);
 
     cmcf = ngx_stream_conf_get_module_main_conf(cf, ngx_stream_core_module);
@@ -993,6 +1014,12 @@ ngx_stream_alg_postconfiguration(ngx_conf_t *cf)
     alg_ctx.ori_downstream_handler = NULL;
     alg_ctx.checkout_handler = ngx_stream_alg_checkout_handler;
 
+    relation = ngx_shared_memory_add(cf, &relation_name, ALG_SHMEM_RELATION_SIZE,
+        &ngx_stream_alg_module);
+    if (!relation) {
+        return NGX_ERROR;
+    }
+
     shm_zone = ngx_shared_memory_add(cf, &zone_name, ALG_SHMEM_ZONE_SIZE,
         &ngx_stream_alg_module);
     if (!shm_zone) {
@@ -1001,8 +1028,11 @@ ngx_stream_alg_postconfiguration(ngx_conf_t *cf)
 
     shm_zone->init = ngx_stream_alg_init_zone;
     shm_zone->data = &alg_ctx;
+    relation->init = ngx_stream_alg_init_relation;
+    relation->data = &alg_ctx;
 
     alg_ctx.shm_zone = shm_zone;
+    alg_ctx.relation = relation;
 
     // dcom_do_test();
 

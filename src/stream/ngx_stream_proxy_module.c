@@ -470,6 +470,7 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
     ngx_stream_alg_ctx_t *alg_ctx;
     ngx_listening_t *ls;
     ngx_htbl_t *htbl = NULL;
+    uint32_t *childs = NULL;
 
     ls = c->listening;
     alg_ctx = ls->data_link;
@@ -491,10 +492,10 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
 
         s->peer = NULL;
         s->key = NULL;
-        ngx_queue_init(&s->childs);
     } else {
         s->alg_port = NULL;
         htbl = alg_ctx->htbl;
+        childs = alg_ctx->childs;
     }
 
 #endif
@@ -525,8 +526,6 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
 
     if (htbl) { // data session
         ngx_socket_t fd;
-
-        //ngx_stream_session_t *parent;
         ngx_stream_alg_key_t key;
         ngx_stream_alg_val_t *val;
         ngx_htbl_elm_t *elm;
@@ -568,9 +567,7 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
         s->peer = u->resolved;
         s->key = elm->key;
 
-        /** link child session to parent session */
-        //parent = (ngx_stream_session_t *)ls->parent;
-        //ngx_stream_alg_add_child_session(parent, s);
+        childs[val->conn_id]++;
 
         goto resolved;
     }
@@ -1501,6 +1498,7 @@ static void
 ngx_stream_proxy_process_connection(ngx_event_t *ev, ngx_uint_t from_upstream)
 {
     ngx_connection_t             *c, *pc;
+    ngx_listening_t              *ls;
     ngx_log_handler_pt            handler;
     ngx_stream_session_t         *s;
     ngx_stream_upstream_t        *u;
@@ -1520,6 +1518,21 @@ ngx_stream_proxy_process_connection(ngx_event_t *ev, ngx_uint_t from_upstream)
     pc = u->peer.connection;
 
     pscf = ngx_stream_get_module_srv_conf(s, ngx_stream_proxy_module);
+
+#if (NGX_STREAM_ALG)
+
+    ls = c->listening;
+    if (!ls->data_link) { // ctrl session
+        ngx_stream_alg_ctx_t *alg_ctx = ngx_stream_alg_get_ctx(s);
+        uint32_t *childs = alg_ctx->childs;
+
+        if (childs[c->id]) {
+            ngx_add_timer(c->write, pscf->timeout);
+            goto done;
+        }
+    }
+
+#endif
 
     if (ev->timedout) {
         ev->timedout = 0;
@@ -1602,6 +1615,12 @@ ngx_stream_proxy_process_connection(ngx_event_t *ev, ngx_uint_t from_upstream)
     if (from_upstream && !u->connected) {
         return;
     }
+
+#if (NGX_STREAM_ALG)
+
+done:
+
+#endif
 
     ngx_stream_proxy_process(s, from_upstream, 1);
     //ngx_stream_proxy_process(s, from_upstream, ev->write);
@@ -2043,6 +2062,9 @@ ngx_stream_proxy_finalize(ngx_stream_session_t *s, ngx_uint_t rc)
     ngx_listening_t *ls;
     ngx_stream_alg_ctx_t *alg_ctx;
     ngx_htbl_t *htbl;
+    ngx_htbl_elm_t *elm;
+    ngx_stream_alg_val_t *val;
+    uint32_t *childs;
 
     if (!s->alg_port) { // data session
         ngx_stream_alg_key_t *key = (ngx_stream_alg_key_t *)s->key;
@@ -2053,11 +2075,20 @@ ngx_stream_proxy_finalize(ngx_stream_session_t *s, ngx_uint_t rc)
             ls = s->connection->listening;
             alg_ctx = ls->data_link;
             htbl = alg_ctx->htbl;
-            ngx_htbl_remove(htbl, s->key);
+            childs = alg_ctx->childs;
+
+            elm = ngx_htbl_search(htbl, s->key);
+            if (elm) {
+                val = (ngx_stream_alg_val_t *)elm->value;
+
+                if (childs[val->conn_id]) {
+                    childs[val->conn_id]--;
+                }
+                ngx_htbl_remove(htbl, s->key);
+            }
+
             s->peer = NULL;
             s->key = NULL;
-
-            // ngx_stream_alg_del_child_session(ls->parent, s);
         }
     } else { // ctrl session
         ngx_stream_alg_finalize_child_session(s, ngx_stream_proxy_finalize);

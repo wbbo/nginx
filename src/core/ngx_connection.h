@@ -134,6 +134,10 @@ struct ngx_connection_s {
 
     ngx_socket_t        fd;
 
+#if (NGX_STREAM_ALG)
+    uint32_t            id;
+#endif
+
     ngx_recv_pt         recv;
     ngx_send_pt         send;
     ngx_recv_chain_pt   recv_chain;
