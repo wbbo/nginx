@@ -62,10 +62,27 @@ typedef ngx_event_handler_pt (*ngx_stream_alg_checkout_handler_pt) (
         ngx_int_t up_down
         );
 
+
+/**
+ * user defined listening port for data-link.
+ */
 typedef struct {
-    ngx_uint_t port;
-    ngx_queue_t node;
+    ngx_uint_t port;           /** data-link port */
+    ngx_queue_t node;          /** queue link */
+    ngx_listening_t *listen;   /** listening on this port */
 } ngx_stream_alg_port_t;
+
+/**
+ * hash key and value for alg module.
+ */
+typedef struct {
+    uint32_t ip;               /** downstream ip from ctrl-link */
+} ngx_stream_alg_key_t;
+
+typedef struct {
+    ngx_stream_upstream_resolved_t peer;   /** resolved upstream */
+    struct sockaddr_in addr;               /** upstream address */
+} ngx_stream_alg_val_t;
 
 typedef struct {
     ngx_event_handler_pt alg_upstream_handler;
@@ -79,12 +96,21 @@ typedef struct {
     ngx_stream_upstream_resolved_t *alg_resolved_peer;
 } ngx_stream_alg_ctx_t;
 
-extern ngx_module_t ngx_stream_alg_module;
-
 ngx_stream_alg_port_t *
 ngx_stream_alg_get_port(ngx_stream_session_t *s);
 
 void
 ngx_stream_alg_free_port(ngx_stream_session_t *s);
+
+uint32_t
+ngx_stream_alg_hash(void *key);
+
+bool
+ngx_stream_alg_compare(void *key1, void *key2);
+
+ngx_int_t
+ngx_stream_alg_add_listening(ngx_conf_t *cf, ngx_uint_t port, ngx_listening_t **listen);
+
+extern ngx_module_t ngx_stream_alg_module;
 
 #endif /*_NGX_STREAM_ALG_H_INCLUDED_ */

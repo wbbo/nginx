@@ -38,6 +38,7 @@ static u_char *ngx_stream_proxy_log_error(ngx_log_t *log, u_char *buf,
 static void *ngx_stream_proxy_create_srv_conf(ngx_conf_t *cf);
 static char *ngx_stream_proxy_merge_srv_conf(ngx_conf_t *cf, void *parent,
     void *child);
+static ngx_int_t ngx_stream_proxy_postconfiguration(ngx_conf_t *cf);
 static char *ngx_stream_proxy_pass(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 static char *ngx_stream_proxy_bind(ngx_conf_t *cf, ngx_command_t *cmd,
@@ -376,7 +377,7 @@ static ngx_command_t  ngx_stream_proxy_commands[] = {
 
 static ngx_stream_module_t  ngx_stream_proxy_module_ctx = {
     NULL,                                  /* preconfiguration */
-    NULL,                                  /* postconfiguration */
+    ngx_stream_proxy_postconfiguration,    /* postconfiguration */
 
     NULL,                                  /* create main configuration */
     NULL,                                  /* init main configuration */
@@ -385,6 +386,11 @@ static ngx_stream_module_t  ngx_stream_proxy_module_ctx = {
     ngx_stream_proxy_merge_srv_conf        /* merge server configuration */
 };
 
+ngx_int_t
+ngx_stream_proxy_module_init_process(ngx_cycle_t *cycle)
+{
+    return NGX_OK;
+}
 
 ngx_module_t  ngx_stream_proxy_module = {
     NGX_MODULE_V1,
@@ -393,7 +399,7 @@ ngx_module_t  ngx_stream_proxy_module = {
     NGX_STREAM_MODULE,                     /* module type */
     NULL,                                  /* init master */
     NULL,                                  /* init module */
-    NULL,                                  /* init process */
+    ngx_stream_proxy_module_init_process,  /* init process */
     NULL,                                  /* init thread */
     NULL,                                  /* exit thread */
     NULL,                                  /* exit process */
@@ -421,26 +427,6 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
 
     ngx_log_debug0(NGX_LOG_DEBUG_STREAM, c->log, 0,
                    "proxy connection handler");
-
-#if (NGX_STREAM_ALG)
-    if (!pscf->alg_inited_once && pscf->alg_port_min && pscf->alg_port_max && pscf->alg_port_max >= pscf->alg_port_min) {
-        ngx_stream_alg_port_t *node;
-        ngx_uint_t port;
-
-        ngx_queue_init(&pscf->alg_port);
-        for (port = pscf->alg_port_min; port <= pscf->alg_port_max; port++) {
-            node = ngx_pcalloc(c->pool, sizeof(ngx_stream_alg_port_t));
-            if (!node) {
-                ngx_log_error(NGX_LOG_ERR, c->log, 0, "no mem for alg port");
-                break;
-            }
-            node->port = port;
-            ngx_queue_insert_tail(&pscf->alg_port, &node->node);
-        }
-
-        pscf->alg_inited_once = 1;
-    }
-#endif
 
     u = ngx_pcalloc(c->pool, sizeof(ngx_stream_upstream_t));
     if (u == NULL) {
@@ -473,22 +459,31 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
     c->read->handler = ngx_stream_proxy_downstream_handler;
 
 #if (NGX_STREAM_ALG)
-    {
-        ngx_stream_alg_main_conf_t *amcf;
-        ngx_stream_session_t *parent;
-        parent = c->listening->parent_stream_session;
-        if (!parent) {
-            amcf = ngx_stream_get_module_main_conf(s,ngx_stream_alg_module);
-            if (amcf) {
-                c->write->handler = (amcf->alg_checkout_stream_handler)(s,
-                        ngx_stream_proxy_downstream_handler,
-                        NGX_STREAM_ALG_DOWNSTREAM);
-                c->read->handler = (amcf->alg_checkout_stream_handler)(s,
-                        ngx_stream_proxy_downstream_handler,
-                        NGX_STREAM_ALG_DOWNSTREAM);
-            }
+
+    ngx_stream_alg_main_conf_t *amcf;
+    ngx_listening_t *ls;
+    ngx_htbl_t *htbl;
+
+    ls = c->listening;
+    htbl = ls->data_link;
+
+    if (!htbl) { // ctrl session
+        amcf = ngx_stream_get_module_main_conf(s, ngx_stream_alg_module);
+        if (amcf) {
+            c->write->handler =
+                amcf->alg_checkout_stream_handler(s,
+                    ngx_stream_proxy_downstream_handler,
+                    NGX_STREAM_ALG_DOWNSTREAM
+                );
+
+            c->read->handler =
+                amcf->alg_checkout_stream_handler(s,
+                    ngx_stream_proxy_downstream_handler,
+                    NGX_STREAM_ALG_DOWNSTREAM
+                );
         }
     }
+
 #endif
 
     s->upstream_states = ngx_array_create(c->pool, 1,
@@ -512,38 +507,61 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
     if (c->read->ready) {
         ngx_post_event(c->read, &ngx_posted_events);
     }
+
 #if (NGX_STREAM_ALG)
-    ngx_stream_session_t *parent;
-    parent = c->listening->parent_stream_session;
-    if (parent) {
-        ngx_stream_alg_ctx_t       *ctx;
-        ctx = ngx_stream_get_module_ctx(parent, ngx_stream_alg_module);
-        if (ctx && ctx->alg_resolved_peer) {
-            ngx_log_debug0(NGX_LOG_DEBUG_STREAM, c->log, 0,
-                    "Alg data connection, don't need to select server.");
-            u->resolved = ctx->alg_resolved_peer;
-            goto resolved;
-        } else {
-            ngx_log_debug0(NGX_LOG_DEBUG_STREAM, c->log, 0,
-                    "ctx or alg resolved peer is invalidate.");
-            ngx_stream_proxy_finalize(s, NGX_STREAM_INTERNAL_SERVER_ERROR);
+
+    if (htbl) { // data session
+        ngx_socket_t fd;
+
+        ngx_stream_alg_key_t key;
+        ngx_stream_alg_val_t *val;
+        ngx_htbl_elm_t *elm;
+
+        struct sockaddr_in addr;
+        socklen_t len;
+
+        // resolve downstream ip
+        fd = c->fd;
+
+        len = sizeof(struct sockaddr_in);
+        ngx_memzero(&addr, len);
+        if (getpeername(fd, (struct sockaddr *)&addr, &len)) {
+            ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid socket fd");
             return;
-            /*error*/
         }
-    } else {
-           ngx_log_debug0(NGX_LOG_DEBUG_STREAM, c->log, 0,
-                   "Don't find the parent session.");
+        key.ip = addr.sin_addr.s_addr;
+
+        elm = ngx_htbl_search(htbl, &key);
+        if (!elm) {
+            ngx_log_error(NGX_LOG_ERR, c->log, 0, "no such entry in htbl");
+            return;
+        }
+
+        val = elm->value;
+        u->resolved = &val->peer;
+        /**
+         * reserve in session avoid hash search for next time.
+         * assure the session must be data session type here.
+         */
+        s->peer = u->resolved;
+        s->key = elm->key;
+
+        goto resolved;
     }
+
 #endif
+
     if (pscf->upstream_value) {
         if (ngx_stream_proxy_eval(s, pscf) != NGX_OK) {
             ngx_stream_proxy_finalize(s, NGX_STREAM_INTERNAL_SERVER_ERROR);
             return;
         }
     }
+
 #if (NGX_STREAM_ALG)
 resolved:
 #endif
+
     if (u->resolved == NULL) {
 
         uscf = pscf->upstream;
@@ -805,18 +823,16 @@ ngx_stream_proxy_connect(ngx_stream_session_t *s)
     u->state->connect_time = (ngx_msec_t) -1;
     u->state->first_byte_time = (ngx_msec_t) -1;
     u->state->response_time = (ngx_msec_t) -1;
+
 #if (NGX_STREAM_ALG)
-    ngx_stream_session_t *parent;
-    parent = s->connection->listening->parent_stream_session;
-    if (parent) {
-        ngx_stream_alg_ctx_t       *ctx;
-        ctx = ngx_stream_get_module_ctx(parent, ngx_stream_alg_module);
-        if (ctx && ctx->alg_resolved_peer) {
-            u->peer.sockaddr = ctx->alg_resolved_peer->sockaddr;
-            u->peer.socklen = ctx->alg_resolved_peer->socklen;
-        }
+
+    if (s->peer) { // data session
+        u->peer.sockaddr = s->peer->sockaddr;
+        u->peer.socklen = s->peer->socklen;
     }
+
 #endif
+
     rc = ngx_event_connect_peer(&u->peer);
 
     ngx_log_debug1(NGX_LOG_DEBUG_STREAM, c->log, 0, "proxy connect: %i", rc);
@@ -1015,22 +1031,30 @@ ngx_stream_proxy_init_upstream(ngx_stream_session_t *s)
     pc->write->handler = ngx_stream_proxy_upstream_handler;
 
 #if (NGX_STREAM_ALG)
-    {
-        ngx_stream_alg_main_conf_t *amcf;
-        ngx_stream_session_t *parent;
-        parent = c->listening->parent_stream_session;
-        if (!parent) {
-            amcf = ngx_stream_get_module_main_conf(s,ngx_stream_alg_module);
+
+    ngx_stream_alg_main_conf_t *amcf;
+    ngx_listening_t *ls;
+
+    ls = c->listening;
+    if (!ls->data_link) { // ctrl session
+        amcf = ngx_stream_get_module_main_conf(s,ngx_stream_alg_module);
+        if (amcf) {
             if (amcf) {
-                pc->write->handler = (amcf->alg_checkout_stream_handler)(s,
+                pc->write->handler =
+                    amcf->alg_checkout_stream_handler(s,
                         ngx_stream_proxy_upstream_handler,
-                        NGX_STREAM_ALG_UPSTREAM);
-                pc->read->handler = (amcf->alg_checkout_stream_handler)(s,
+                        NGX_STREAM_ALG_UPSTREAM
+                    );
+
+                pc->read->handler =
+                    amcf->alg_checkout_stream_handler(s,
                         ngx_stream_proxy_upstream_handler,
-                        NGX_STREAM_ALG_UPSTREAM);
+                        NGX_STREAM_ALG_UPSTREAM
+                    );
             }
         }
     }
+
 #endif
 
     if (pc->read->ready) {
@@ -1991,23 +2015,22 @@ ngx_stream_proxy_finalize(ngx_stream_session_t *s, ngx_uint_t rc)
                    "finalize stream proxy: %i", rc);
 
 #if (NGX_STREAM_ALG)
-    ngx_stream_alg_ctx_t *ctx = ngx_stream_get_module_ctx(s, ngx_stream_alg_module);
-    if (ctx ) { // parrent session
-        if (ctx->alg_resolved_peer) {
-            if (ctx->alg_resolved_peer->sockaddr) {
-                ngx_pfree(s->connection->pool, ctx->alg_resolved_peer->sockaddr);
-            }
-            ngx_pfree(s->connection->pool, ctx->alg_resolved_peer);
+
+    ngx_listening_t *ls;
+    ngx_htbl_t *htbl;
+
+    if (s->peer) { // data session
+        ls = s->connection->listening;
+        htbl = ls->data_link;
+        ngx_htbl_remove(htbl, s->key);
+        s->peer = NULL;
+        s->key = NULL;
+    } else { // ctrl session
+        if (s->alg_port) {
+            ngx_stream_alg_free_port(s);
         }
-        ngx_pfree(s->connection->pool,ctx);
-    } else { // child session
-        ngx_close_one_listening_socket(s->connection->listening);
-        ngx_pfree(s->connection->pool, s->connection->listening);
     }
 
-    if (s->alg_port) {
-        ngx_stream_alg_free_port(s);
-    }
 #endif
 
     u = s->upstream;
@@ -2154,6 +2177,12 @@ ngx_stream_proxy_create_srv_conf(ngx_conf_t *cf)
     conf->alg_port_min = NGX_CONF_UNSET_UINT;
     conf->alg_port_max = NGX_CONF_UNSET_UINT;
     conf->alg_inited_once = 0;
+
+    conf->pool = ngx_create_pool(NGX_DEFAULT_POOL_SIZE, cf->log);
+    if (!conf->pool) {
+        ngx_pfree(cf->pool, conf);
+        return NULL;
+    }
 #endif
 
     return conf;
@@ -2250,6 +2279,31 @@ ngx_stream_proxy_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 
 #endif
 
+#if (NGX_STREAM_ALG)
+    if (!conf->alg_inited_once) {
+        ngx_queue_init(&conf->alg_port);
+
+        if (conf->alg_port_min && conf->alg_port_max) {
+            if (conf->alg_port_max >= conf->alg_port_min) {
+                ngx_stream_alg_port_t *node;
+                ngx_uint_t port;
+
+                for (port = conf->alg_port_min; port <= conf->alg_port_max; port++) {
+                    node = ngx_pcalloc(conf->pool, sizeof(ngx_stream_alg_port_t));
+                    if (!node) {
+                        break;
+                    }
+                    node->port = port;
+                    node->listen = NULL;
+                    ngx_queue_insert_tail(&conf->alg_port, &node->node);
+                }
+            }
+        }
+
+        conf->alg_inited_once = 1;
+    }
+#endif
+
     return NGX_CONF_OK;
 }
 
@@ -2338,6 +2392,47 @@ ngx_stream_proxy_set_ssl(ngx_conf_t *cf, ngx_stream_proxy_srv_conf_t *pscf)
 }
 
 #endif
+
+static ngx_int_t
+ngx_stream_proxy_postconfiguration(ngx_conf_t *cf)
+{
+#if (NGX_STREAM_ALG)
+
+    ngx_stream_proxy_srv_conf_t *pscf;
+    ngx_htbl_ops_t ops;
+    ngx_listening_t *listen;
+    ngx_stream_alg_port_t *alg_port;
+    ngx_int_t rv;
+
+    pscf = ngx_stream_conf_get_module_srv_conf(cf, ngx_stream_proxy_module);
+    if (!pscf) {
+        return NGX_ERROR;
+    }
+
+    ops.hash = ngx_stream_alg_hash;
+    ops.compare = ngx_stream_alg_compare;
+
+    if (!ngx_queue_empty(&pscf->alg_port)) {
+        ngx_queue_foreach_data(alg_port, &pscf->alg_port, node) {
+            listen = NULL;
+
+            rv = ngx_stream_alg_add_listening(cf, alg_port->port, &listen);
+            if (rv == NGX_OK) {
+                if (listen) {
+                    listen->data_link = ngx_htbl_create(pscf->pool, &ops, NGX_HTBL_BUCKET_NUM,
+                        NGX_HTBL_BUCKET_ENTRIES, NGX_HTBL_MAX_CYCLE);
+                    if (!listen->data_link) {
+                        return NGX_ERROR;
+                    }
+                    alg_port->listen = listen;
+                }
+            }
+        }
+    }
+
+#endif
+    return NGX_OK;
+}
 
 
 static char *

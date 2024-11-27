@@ -522,7 +522,6 @@ ngx_int_t ngx_event_post_acceptex(ngx_listening_t *ls, ngx_uint_t n);
 u_char *ngx_acceptex_log_error(ngx_log_t *log, u_char *buf, size_t len);
 #endif
 
-ngx_int_t ngx_event_one_listening_init(ngx_listening_t *ls);
 ngx_int_t ngx_send_lowat(ngx_connection_t *c, size_t lowat);
 
 

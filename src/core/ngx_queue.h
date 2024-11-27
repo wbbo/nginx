@@ -104,6 +104,13 @@ struct ngx_queue_s {
     (type *) ((u_char *) q - offsetof(type, link))
 
 
+#define ngx_queue_foreach(h, q)                                               \
+    for (q = ngx_queue_next(h); q != h; q = ngx_queue_next(q))
+
+#define ngx_queue_foreach_data(p, h, link)                                    \
+    for (p = ngx_queue_data((h)->next, typeof(*p), link); &p->link != (h);    \
+        p = ngx_queue_data(p->link.next, typeof(*p), link))
+
 ngx_queue_t *ngx_queue_middle(ngx_queue_t *queue);
 void ngx_queue_sort(ngx_queue_t *queue,
     ngx_int_t (*cmp)(const ngx_queue_t *, const ngx_queue_t *));

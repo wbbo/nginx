@@ -16,8 +16,25 @@
 #include <ngx_stream.h>
 #include <nginx.h>
 #include <ngx_stream_alg_module.h>
+#include <ngx_jhash.h>
 
 #include <packet-dcom.h>
+
+uint32_t ngx_stream_alg_hash(void *key)
+{
+    ngx_stream_alg_key_t *k = key;
+    return ngx_jhash_1word(k->ip, JHASH_INITVAL);
+}
+
+bool ngx_stream_alg_compare(void *key1, void *key2)
+{
+    ngx_stream_alg_key_t *k1 = key1;
+    ngx_stream_alg_key_t *k2 = key2;
+    if (k1->ip == k2->ip) {
+        return true;
+    }
+    return false;
+}
 
 ngx_stream_alg_port_t * ngx_stream_alg_get_port(ngx_stream_session_t *s)
 {
@@ -92,119 +109,97 @@ void ngx_stream_alg_free_port(ngx_stream_session_t *s)
     return;
 }
 
-static ngx_int_t ngx_stream_alg_new_listen(ngx_stream_session_t *s, ngx_uint_t port, ngx_listening_t **listen)
+ngx_int_t
+ngx_stream_alg_add_listening(ngx_conf_t *cf, ngx_uint_t port, ngx_listening_t **listen)
 {
-    ngx_connection_t *c;
-    ngx_listening_t *ori, *new;
-    struct sockaddr_in *addr, addr2;
+    ngx_listening_t *ls;
+    struct sockaddr_in addr;
     socklen_t len;
-    ngx_uint_t _port;
-
-    c = s->connection;
-    ori = c->listening;
-
-    if (!ori) {
-        ngx_log_error(NGX_LOG_ERR, c->log, NGX_EINVAL, "connection orignal listening null");
-        return NGX_ERROR;
-    }
 
     len = sizeof(struct sockaddr_in);
-    addr = (struct sockaddr_in *)ngx_pcalloc(c->pool, len);
-    if (!addr) {
-        ngx_log_error(NGX_LOG_ERR, c->log, NGX_ENOMEM, "no memory");
-        return NGX_ERROR;
-    }
-    addr->sin_family = AF_INET;
-    addr->sin_port = htons(port);
-    addr->sin_addr.s_addr = INADDR_ANY;
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = INADDR_ANY;
 
-    new = ngx_pcalloc(c->pool, sizeof(ngx_listening_t));
-    *new = *ori;
-    new->ignore = 0;
-    new->fd = -1;
-    new->inherited = 0;
-    new->reuseport = 0;
-    new->sockaddr = (struct sockaddr *)addr;
-    new->parent_stream_session = s;
-    new->worker = ngx_worker;
-    new->addr_text.len = INET_ADDRSTRLEN + 1 + 8;
-    new->addr_text.data = ngx_pcalloc(c->pool, new->addr_text.len);
-
-    if (ngx_open_one_listening_socket(new) == NGX_ERROR) {
-        ngx_log_debug(NGX_LOG_DEBUG_STREAM, c->log, 0, "ngx open one listening socket failed");
-        return NGX_ERROR;
-    }
-    if (ngx_event_one_listening_init(new) == NGX_ERROR) {
-        ngx_log_debug(NGX_LOG_DEBUG_STREAM, c->log, 0, "ngx event one listening init failed");
-        return NGX_ERROR;
-    }
-    if (getsockname(new->fd, (struct sockaddr *)&addr2, &len)) {
+    ls = ngx_create_listening(cf, (struct sockaddr *)&addr, len);
+    if (!ls) {
         return NGX_ERROR;
     }
 
-    _port = ntohs(addr2.sin_port);
-    ngx_snprintf(new->addr_text.data, new->addr_text.len, "0.0.0.0:%ud", _port);
+    ls->addr_ntop = 1;
+    ls->handler = ngx_stream_init_connection;
+    ls->pool_size = 256;
+    ls->type = SOCK_STREAM;
+
+#if 0
+    cscf = addr->opt.ctx->srv_conf[ngx_stream_core_module.ctx_index];
+    ls->logp = cscf->error_log;
+#endif
+
+    ls->logp = cf->log;
+    ls->log.data = &ls->addr_text;
+    ls->log.handler = ngx_accept_log_error;
+
+    ls->backlog = 511;
+    ls->rcvbuf = -1;
+    ls->sndbuf = -1;
+
+    ls->wildcard = 0;
+
+    ls->keepalive = 0;
+
+#if (NGX_HAVE_KEEPALIVE_TUNABLE)
+    ls->keepidle = 0;
+    ls->keepintvl = 0;
+    ls->keepcnt = 0;
+#endif
+
+#if (NGX_HAVE_INET6)
+    ls->ipv6only = 1;
+#endif
+
+#if (NGX_HAVE_REUSEPORT)
+    ls->reuseport = 0;
+#endif
+
+    /**
+     * ls->servers is a complex struct generate at config phase. see stream
+     * proxy module 'listen' command.
+     *
+     * because data session is related to ctrl session, we just 'copy' ctrl
+     * session's ls->server to data session's ls->server. we deferred this
+     * task to the moment when a data session is negotiated.
+     */
 
     if (listen) {
-        *listen = new;
+        *listen = ls;
     }
 
-    return _port;
+    return NGX_OK;
 }
 
 static ngx_int_t
-ngx_stream_alg_ftp_resolve_addr(ngx_stream_session_t *s, u_char *addr_info,
-        ssize_t size)
+ngx_stream_alg_ftp_resolve_addr(ngx_stream_session_t *s, u_char *addr, size_t size,
+    unsigned int ip[4], unsigned int *port)
 {
-    u_char addr_str[INET_ADDRSTRLEN + 1] = {0};
-    unsigned int ip[4] = {0};
     unsigned int port1, port2;
-    struct sockaddr_in *addr;
+    ngx_int_t rv;
 
-    if (!ngx_strlchr(addr_info, addr_info + size - 1, ',')) {
+    if (!ngx_strlchr(addr, addr + size - 1, ',')) {
         ngx_log_error(NGX_LOG_ERR, s->connection->log, 0, "format error: , not found");
         return NGX_ERROR;
     }
 
-    ngx_stream_alg_ctx_t *ctx = ngx_stream_get_module_ctx(s, ngx_stream_alg_module);
-    if (!ctx) {
-        ngx_log_error(NGX_LOG_ERR, s->connection->log, NGX_EINVAL, "ngx stream alg module ctx null");
-        return NGX_ERROR;
-    }
-
-    ngx_stream_upstream_resolved_t *peer = ctx->alg_resolved_peer;
-    if (!peer || !peer->sockaddr) {
-        ngx_log_error(NGX_LOG_ERR, s->connection->log, NGX_EINVAL, "alg resolved peer null");
-        return NGX_ERROR;
-    }
-
-    addr = (struct sockaddr_in *)peer->sockaddr;
-    addr->sin_family = AF_INET;
-
-    ngx_int_t rc = sscanf((const char*)addr_info,
-                            "%u,%u,%u,%u,%u,%u",
-                            &ip[0], &ip[1], &ip[2], &ip[3],
-                            &port1, &port2
-                    );
-
-    if (rc != 6) {
+    rv = sscanf((const char*)addr, "%u,%u,%u,%u,%u,%u", &ip[0], &ip[1], &ip[2], &ip[3],
+                        &port1, &port2);
+    if (rv != 6) {
         ngx_log_error(NGX_LOG_ERR, s->connection->log, 0, "format error: address invalid");
         return NGX_ERROR;
     }
 
-    addr->sin_port = htons(port1 * 256 + port2);
-    ngx_snprintf(addr_str, INET_ADDRSTRLEN, "%ud.%ud.%ud.%ud", ip[0], ip[1], ip[2], ip[3]);
-
-    addr->sin_addr.s_addr = ngx_inet_addr(addr_str, ngx_strlen(addr_str));
-    if (addr->sin_addr.s_addr == INADDR_NONE) {
-        ngx_log_error(NGX_LOG_ERR, s->connection->log, NGX_EINVAL, "INADDR NONE");
-        return NGX_ERROR;
+    if (port) {
+        *port = port1 * 256 + port2;
     }
-
-    peer->socklen = sizeof(struct sockaddr_in);
-    peer->naddrs = 1;
-    peer->port = htons(port1 * 256 + port2);
-    peer->no_port = 0;
 
     return NGX_OK;
 }
@@ -214,22 +209,18 @@ ngx_stream_alg_process_ftp(ngx_stream_session_t *s, ngx_buf_t *buffer)
 {
     ngx_connection_t *c;
     ngx_socket_t fd;
-    struct sockaddr_in addr;
-    socklen_t len;
+    ngx_uint_t total_len;
+    ngx_int_t rv;
 
     u_char *cmd, *p, *q;
-    u_char pasv[] = "227 Entering Passive Mode (";
-    u_char port[] = "PORT ";
+    u_char cmd_pasv[] = "227 Entering Passive Mode (";
+    u_char cmd_port[] = "PORT ";
     ngx_uint_t ftp_mode = 0; // 1-PASV 2-PORT
-
-    u_char addr_str[INET_ADDRSTRLEN + 1] = {0};
-    unsigned int ip[4] = {0};
 
     c = s->connection;
     fd = c->fd;
-    len = sizeof(addr);
 
-    ngx_uint_t total_len = buffer->last - buffer->pos;
+    total_len = buffer->last - buffer->pos;
     if (total_len < 2) {
         ngx_log_debug(NGX_LOG_DEBUG_STREAM, c->log, 0, "format error: truncated");
         return NGX_AGAIN;
@@ -241,7 +232,7 @@ ngx_stream_alg_process_ftp(ngx_stream_session_t *s, ngx_buf_t *buffer)
         return NGX_AGAIN;
     }
 
-    if (ngx_strstr(cmd, pasv)) {
+    if (ngx_strstr(cmd, cmd_pasv)) {
         ngx_log_debug(NGX_LOG_DEBUG_STREAM, c->log, 0, "FTP passive mode");
 
         p = ngx_strlchr(cmd, cmd + total_len - 1, '(');
@@ -253,7 +244,7 @@ ngx_stream_alg_process_ftp(ngx_stream_session_t *s, ngx_buf_t *buffer)
         ftp_mode = 1;
     }
 
-    if (ngx_strstr(cmd, port)) {
+    if (ngx_strstr(cmd, cmd_port)) {
         ngx_log_debug(NGX_LOG_DEBUG_STREAM, c->log, 0, "FTP port mode");
 
         p = ngx_strlchr(cmd, cmd + total_len - 1, ' ');
@@ -268,17 +259,30 @@ ngx_stream_alg_process_ftp(ngx_stream_session_t *s, ngx_buf_t *buffer)
     if (ftp_mode) {
         ngx_stream_proxy_srv_conf_t *pscf;
         ngx_stream_alg_port_t *alg_port;
-        ngx_int_t rv;
-        ngx_int_t port;
-        ngx_uint_t retry = 0;
+        ngx_listening_t *ls;
+        ngx_htbl_t *htbl;
+
+        unsigned int ip1[4] = {0};     // resovled upstream ip
+        unsigned int port1 = 0;        // resovled upstream port
+        unsigned int ip2[4] = {0};     // proxy ip
+        unsigned int port2 = 0;        // proxy port
+        uint32_t downstream_ip;
+
+        struct sockaddr_in addr;
+        socklen_t len;
+        u_char addr_str[INET_ADDRSTRLEN];
+
         p += 1;
         q -= 1;
 
-        if (ngx_stream_alg_ftp_resolve_addr(s, p, q - p + 1) < 0) {
-            ngx_log_debug(NGX_LOG_DEBUG_STREAM, c->log, 0, "format error: ip and port not found");
-            return NGX_OK;
+        // resolve upstream address
+        rv = ngx_stream_alg_ftp_resolve_addr(s, p, q - p + 1, ip1, &port1);
+        if (rv != NGX_OK) {
+            ngx_log_debug(NGX_LOG_DEBUG_STREAM, c->log, 0, "ftp alg resolve upstream address failed");
+            return NGX_ERROR;
         }
 
+        // resolve proxy address
         if (ftp_mode == 1) { // PASV mode
             ; // fd = fd
         }
@@ -286,66 +290,116 @@ ngx_stream_alg_process_ftp(ngx_stream_session_t *s, ngx_buf_t *buffer)
             fd = s->upstream->peer.connection->fd;
         }
 
+        len = sizeof(struct sockaddr_in);
+        ngx_memzero(&addr, len);
         if (getsockname(fd, (struct sockaddr *)&addr, &len)) {
             ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid socket fd");
             return NGX_ERROR;
         }
 
+        ngx_memzero(addr_str, INET_ADDRSTRLEN);
         ngx_inet_ntop(addr.sin_family, (struct sockaddr *)&addr.sin_addr, addr_str, INET_ADDRSTRLEN);
 
-        rv = sscanf((const char *)addr_str, "%u.%u.%u.%u", &ip[0], &ip[1], &ip[2], &ip[3]);
+        rv = sscanf((const char *)addr_str, "%u.%u.%u.%u", &ip2[0], &ip2[1], &ip2[2], &ip2[3]);
         if(rv != 4 ) {
             ngx_log_debug(NGX_LOG_DEBUG_STREAM, c->log, 0, "invalid address");
-            return NGX_OK;
+            return NGX_ERROR;
         }
 
-        /**
-         * data link port come from:
-         * 1. system auto alloc when a router be used.
-         * 2. user defined when a firewall be used.
-         */
+        // resolve downstream address
+        len = sizeof(struct sockaddr_in);
+        ngx_memzero(&addr, len);
+        if (getpeername(fd, (struct sockaddr *)&addr, &len)) {
+            ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid socket fd");
+            return NGX_ERROR;
+        }
+        downstream_ip = addr.sin_addr.s_addr;
+
+        // select listening port
         pscf = ngx_stream_get_module_srv_conf(s, ngx_stream_proxy_module);
         if (!pscf) {
             ngx_log_error(NGX_LOG_ERR, c->log, 0, "proxy srv conf null");
             return NGX_ERROR;
         }
 
-        if (pscf->alg_port_min != NGX_CONF_UNSET_UINT) { // user defined
+        if (pscf->alg_port_min != NGX_CONF_UNSET_UINT) {
+            /**
+             * user defined, open listening at config phase, and never
+             * close until the process exit. see stream proxy module
+             * postconfiguration.
+             */
             alg_port = ngx_stream_alg_get_port(s);
             if (!alg_port) {
                 ngx_log_error(NGX_LOG_ERR, c->log, 0, "no alg port available");
                 return NGX_ERROR;
             }
-            port = alg_port->port;
-        } else { // system auto alloc
-            port = 0;
-        }
-
-        do {
-            port = ngx_stream_alg_new_listen(s, port, NULL);
-        } while(port <= 0 && retry++ < 5);
-
-        if (port <= 0) {
-            ngx_log_error(NGX_LOG_ERR, c->log, 0, "create listening port failed");
+            port2 = alg_port->port;
+            ls = alg_port->listen;
+            htbl = ls->data_link;
+            ls->servers = c->listening->servers;
+        } else {
+            /**
+             * TODO : system auto alloc.
+             */
+            ngx_log_error(NGX_LOG_ERR, c->log, 0, "not supported yet");
             return NGX_ERROR;
         }
 
+        /**
+         * establiash relationship between downstream and upstream for upcoming
+         * data-link.
+         *      (downstream ctrl-link ip, listen) -> upstream address
+         */
+        ngx_stream_alg_key_t *key = ngx_htbl_pcalloc(htbl, sizeof(ngx_stream_alg_key_t));
+        if (!key) {
+            ngx_log_error(NGX_LOG_ERR, c->log, 0, "no mem for alg key");
+            return NGX_ERROR;
+        }
+        ngx_stream_alg_val_t *val = ngx_htbl_pcalloc(htbl, sizeof(ngx_stream_alg_val_t));
+        if (!val) {
+            ngx_htbl_pfree(htbl, key);
+            ngx_log_error(NGX_LOG_ERR, c->log, 0, "no mem for alg key");
+            return NGX_ERROR;
+        }
+        key->ip = downstream_ip;
+
+        ngx_memzero(addr_str, INET_ADDRSTRLEN);
+        ngx_snprintf(addr_str, INET_ADDRSTRLEN, "%ud.%ud.%ud.%ud", ip1[0], ip1[1], ip1[2], ip1[3]);
+        val->addr.sin_family = AF_INET;
+        val->addr.sin_port = htons(port1);
+        val->addr.sin_addr.s_addr = ngx_inet_addr(addr_str, ngx_strlen(addr_str));
+        val->peer.sockaddr = (struct sockaddr *)&val->addr;
+        val->peer.socklen = sizeof(struct sockaddr_in);
+        val->peer.naddrs = 1;
+        val->peer.port = htons(port1);
+        val->peer.no_port = 0;
+
+        rv = ngx_htbl_insert(htbl, key, val);
+        if (rv != NGX_OK) {
+            ngx_htbl_pfree(htbl, key);
+            ngx_htbl_pfree(htbl, val);
+            return NGX_ERROR;
+        }
+
+        /**
+         * modify the packet, switch orignal address to proxy address.
+         */
         ngx_memset(buffer->pos, 0, total_len);
 
         if (ftp_mode == 1) { // PASV mode
             ngx_snprintf(buffer->pos, 80, "227 Entering Passive Mode \
                     (%ud,%ud,%ud,%ud,%ud,%ud).\r\n",
-                    ip[0], ip[1], ip[2], ip[3],
-                    port / 256,
-                    port % 256
+                    ip2[0], ip2[1], ip2[2], ip2[3],
+                    port2 / 256,
+                    port2 % 256
             );
         }
 
         if (ftp_mode == 2) { // PORT mode
             ngx_snprintf(buffer->pos, 80, "PORT %ud,%ud,%ud,%ud,%ud,%ud\r\n",
-                    ip[0], ip[1], ip[2], ip[3],
-                    port / 256,
-                    port % 256
+                    ip2[0], ip2[1], ip2[2], ip2[3],
+                    port2 / 256,
+                    port2 % 256
             );
         }
 
@@ -358,45 +412,43 @@ ngx_stream_alg_process_ftp(ngx_stream_session_t *s, ngx_buf_t *buffer)
 static ngx_int_t
 ngx_stream_alg_process_opcda(ngx_stream_session_t *s, ngx_buf_t *buffer)
 {
-    ngx_stream_alg_ctx_t *ctx;
-    ngx_stream_upstream_resolved_t *peer;
-    ngx_stream_alg_port_t *alg_port = NULL;
+    ngx_stream_alg_port_t *alg_port;
+    ngx_uint_t port;
+    struct sockaddr_in addr;
+    socklen_t len;
     ngx_socket_t fd;
-    struct sockaddr_in addr, *paddr;
-    socklen_t addrlen;
-    filter_dcom_data_t d;
-    ngx_listening_t *listen = NULL;
-    ngx_int_t port = 0;
-    ngx_int_t retry;
+
     ngx_int_t offset, endian;
     dcom_resp_t type;
+    filter_dcom_data_t d;
+
+    ngx_listening_t *ls;
+    ngx_htbl_t *htbl;
+    ngx_stream_alg_key_t *key;
+    ngx_stream_alg_val_t *val;
+
     ngx_int_t rv;
 
-    // alg module precheck
-    ctx = ngx_stream_get_module_ctx(s, ngx_stream_alg_module);
-    if (!ctx) {
-        ngx_log_error(NGX_LOG_ERR, s->connection->log, NGX_EINVAL, "alg module ctx null");
-        return NGX_ERROR;
-    }
-
-    peer = ctx->alg_resolved_peer;
-    if (!peer || !peer->sockaddr) {
-        ngx_log_error(NGX_LOG_ERR, s->connection->log, NGX_EINVAL, "alg resolved peer null");
-        return NGX_ERROR;
-    }
+    ls = NULL;
+    htbl = NULL;
+    alg_port = NULL;
+    key = NULL;
+    val = NULL;
+    port = 0;
 
     // dcom protocol precheck
-    if (dissect_dcom_precheck(buffer, 0) == NGX_DECLINED) {
+    rv = dissect_dcom_precheck(buffer, 0);
+    if (rv == NGX_DECLINED) {
         return NGX_OK;
     }
 
     ngx_memzero(&d, sizeof(filter_dcom_data_t));
 
-    // proxy address
-    addrlen = sizeof(struct sockaddr_in);
-    ngx_memzero(&addr, addrlen);
+    // resolve proxy address
+    len = sizeof(struct sockaddr_in);
+    ngx_memzero(&addr, len);
     fd = s->connection->fd; // local address
-    if (getsockname(fd, (struct sockaddr *)&addr, &addrlen)) {
+    if (getsockname(fd, (struct sockaddr *)&addr, &len)) {
         ngx_log_error(NGX_LOG_ERR, s->connection->log, 0, "invalid socket fd");
         return NGX_ERROR;
     }
@@ -407,6 +459,7 @@ ngx_stream_alg_process_opcda(ngx_stream_session_t *s, ngx_buf_t *buffer)
         INET_ADDRSTRLEN
     );
 
+    // dissect and modify the packet
     offset = dissect_dcom_resp_hdr(buffer, 0, &type, &endian);
     if ((type == DCOM_RESP_RESOLVE_OXID2) || (type == DCOM_RESP_CREATE_INSTANCE)) { // response has dynamic port
          /**
@@ -427,22 +480,13 @@ ngx_stream_alg_process_opcda(ngx_stream_session_t *s, ngx_buf_t *buffer)
                 return NGX_ERROR;
             }
             port = alg_port->port;
+            ls = alg_port->listen;
+            htbl = ls->data_link;
         } else { // system auto alloc
-            port = 0;
-        }
-
-        retry = 0;
-        do {
-            port = ngx_stream_alg_new_listen(s, port, &listen);
-        } while(port <= 0 && retry++ < 5);
-
-        if (port <= 0) {
-            ngx_log_error(NGX_LOG_ERR, s->connection->log, 0, "new listening port failed");
-            goto err;
+            ngx_log_error(NGX_LOG_ERR, s->connection->log, 0, "not supported yet");
+            return NGX_ERROR;
         }
     }
-
-    ngx_log_debug(NGX_LOG_DEBUG_STREAM, s->connection->log, 0, "opcda proxy port %d", port);
 
     d.iport = port;
     buffer->priv = &d;
@@ -455,32 +499,58 @@ ngx_stream_alg_process_opcda(ngx_stream_session_t *s, ngx_buf_t *buffer)
         goto done;
     }
 
+    if (!htbl || !port) {
+        goto done;
+    }
+
     if (!d.oport) { // resolve dynamic port failed
         ngx_log_error(NGX_LOG_ERR, s->connection->log, 0, "opcda resolve dynamic port failed");
         goto err;
     }
 
-    ngx_log_debug(NGX_LOG_DEBUG_STREAM, s->connection->log, 0, "opcda upstream port %d", d.oport);
+    key = ngx_htbl_pcalloc(htbl, sizeof(ngx_stream_alg_key_t));
+    if (!key) {
+        ngx_log_error(NGX_LOG_ERR, s->connection->log, 0, "no memory");
+        goto err;
+    }
 
-    /**
-     * reserve resolved upstream address.
-     */
-    addrlen = sizeof(struct sockaddr_in);
-    ngx_memzero(&addr, addrlen);
+    val = ngx_htbl_pcalloc(htbl, sizeof(ngx_stream_alg_val_t));
+    if (!val) {
+        ngx_log_error(NGX_LOG_ERR, s->connection->log, 0, "no memory");
+        goto err;
+    }
+
+    // resolve downstream address
+    len = sizeof(struct sockaddr_in);
+    ngx_memzero(&addr, len);
+    if (getpeername(fd, (struct sockaddr *)&addr, &len)) {
+        ngx_log_error(NGX_LOG_ERR, s->connection->log, 0, "invalid socket fd");
+        goto err;
+    }
+    key->ip = addr.sin_addr.s_addr;
+
+    // resolve upstream address
+    len = sizeof(struct sockaddr_in);
+    ngx_memzero(&addr, len);
     fd = s->upstream->peer.connection->fd; // upstream address
-    if (getpeername(fd, (struct sockaddr *)&addr, &addrlen)) {
+    if (getpeername(fd, (struct sockaddr *)&addr, &len)) {
         ngx_log_error(NGX_LOG_ERR, s->connection->log, 0, "invalid socket fd");
         goto err;
     }
 
-    paddr = (struct sockaddr_in *)peer->sockaddr;
-    *paddr = addr;
-    paddr->sin_port = htons(d.oport);
+    val->addr = addr;
+    val->addr.sin_port = htons(d.oport);
+    val->peer.sockaddr = (struct sockaddr *)&val->addr;
+    val->peer.socklen = sizeof(struct sockaddr_in);
+    val->peer.naddrs = 1;
+    val->peer.port = htons(d.oport);
+    val->peer.no_port = 0;
 
-    peer->socklen = sizeof(struct sockaddr_in);
-    peer->naddrs = 1;
-    peer->port = htons(d.oport);
-    peer->no_port = 0;
+    rv = ngx_htbl_insert(htbl, key, val);
+    if (rv !=  NGX_OK) {
+        ngx_log_error(NGX_LOG_ERR, s->connection->log, 0, "ngx htbl insert failed");
+        goto err;
+    }
 
 done:
     return NGX_OK;
@@ -489,9 +559,11 @@ err:
     if (alg_port) {
         ngx_stream_alg_free_port(s);
     }
-
-    if (listen) {
-        ngx_close_one_listening_socket(listen);
+    if (key) {
+        ngx_htbl_pfree(htbl, key);
+    }
+    if (val) {
+        ngx_htbl_pfree(htbl, val);
     }
 
     return NGX_ERROR;
@@ -709,43 +781,22 @@ ngx_stream_alg_create_main_conf(ngx_conf_t *cf)
 static ngx_int_t
 ngx_stream_alg_handler(ngx_stream_session_t *s)
 {
-    ngx_stream_proxy_srv_conf_t *pscf;
-    ngx_connection_t *c;
     ngx_stream_alg_ctx_t *ctx;
-    ngx_listening_t *l;
+    ngx_connection_t *c;
+    ngx_listening_t *ls;
 
     c = s->connection;
-
-    pscf = ngx_stream_get_module_srv_conf(s, ngx_stream_proxy_module);
-    if (!pscf) {
-        ngx_log_error(NGX_LOG_ERR, c->log, NGX_ENOENT, "stream proxy module srv conf null");
-        return NGX_DECLINED;
-    }
-
     if (c->type != SOCK_STREAM) {
-        ngx_log_error(NGX_LOG_ERR, c->log, 0, "connection type error");
+        ngx_log_error(NGX_LOG_ERR, c->log, 0, "not tcp stream");
         return NGX_DECLINED;
     }
 
-    l = c->listening;
-
-    if (!l->parent_stream_session) { // parent session
+    ls = c->listening;
+    if (!ls->data_link) { // ctrl session
         ctx = ngx_stream_get_module_ctx(s, ngx_stream_alg_module);
         if (!ctx) {
             ctx = ngx_pcalloc(c->pool, sizeof(ngx_stream_alg_ctx_t));
             if (!ctx) {
-                ngx_log_error(NGX_LOG_ERR, c->log, NGX_ENOMEM, "no memory");
-                return NGX_ERROR;
-            }
-
-            ctx->alg_resolved_peer = ngx_pcalloc(c->pool, sizeof(ngx_stream_upstream_resolved_t));
-            if (!ctx->alg_resolved_peer) {
-                ngx_log_error(NGX_LOG_ERR, c->log, NGX_ENOMEM, "no memory");
-                return NGX_ERROR;
-            }
-
-            ctx->alg_resolved_peer->sockaddr = ngx_pcalloc(c->pool,sizeof(struct sockaddr_in));
-            if (!ctx->alg_resolved_peer->sockaddr) {
                 ngx_log_error(NGX_LOG_ERR, c->log, NGX_ENOMEM, "no memory");
                 return NGX_ERROR;
             }

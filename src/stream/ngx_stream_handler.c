@@ -131,6 +131,8 @@ ngx_stream_init_connection(ngx_connection_t *c)
 
 #if (NGX_STREAM_ALG)
     s->alg_port = NULL;
+    s->peer = NULL;
+    s->key = NULL;
 #endif
 
     if (c->buffer) {

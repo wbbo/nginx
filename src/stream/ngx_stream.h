@@ -213,7 +213,9 @@ struct ngx_stream_session_s {
     ngx_stream_variable_value_t   *variables;
 
 #if (NGX_STREAM_ALG)
-    void                          *alg_port; /** ngx_stream_alg_port_t */
+    void                           *alg_port; /** ngx_stream_alg_port_t, for ctrl session */
+    ngx_stream_upstream_resolved_t *peer;     /** resovled upstream, for data session */
+    void                           *key;      /** ngx_stream_alg_key_t for resolved peer */
 #endif
 
 #if (NGX_PCRE)
@@ -285,6 +287,8 @@ typedef struct {
     /* maintain alg port queue */
     ngx_int_t                       alg_inited_once;
     ngx_queue_t                     alg_port;
+
+    ngx_pool_t                      *pool;
 #endif
 
     ngx_stream_upstream_srv_conf_t  *upstream;
