@@ -1,0 +1,9 @@
+server {
+    listen 10.1.0.128:135;
+    proxy_connect_timeout 30s;#服务侧超时时间
+    proxy_timeout  30s; #客户端侧超时时间
+    proxy_pass 10.2.0.9:135;
+    alg_proto opcda;
+    alg_port_min 10000;
+    alg_port_max 10010;
+}

@@ -1,0 +1,9 @@
+server {
+    listen 10.1.0.128:21;
+    proxy_connect_timeout 30s;#服务侧超时时间
+    proxy_timeout  30s; #客户端侧超时时间
+    proxy_pass 10.2.0.9:21;
+    alg_proto ftp;
+    alg_port_min 1234;
+    alg_port_max 1234;
+}
