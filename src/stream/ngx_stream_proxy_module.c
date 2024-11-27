@@ -2279,31 +2279,6 @@ ngx_stream_proxy_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 
 #endif
 
-#if (NGX_STREAM_ALG)
-    if (!conf->alg_inited_once) {
-        ngx_queue_init(&conf->alg_port);
-
-        if (conf->alg_port_min && conf->alg_port_max) {
-            if (conf->alg_port_max >= conf->alg_port_min) {
-                ngx_stream_alg_port_t *node;
-                ngx_uint_t port;
-
-                for (port = conf->alg_port_min; port <= conf->alg_port_max; port++) {
-                    node = ngx_pcalloc(conf->pool, sizeof(ngx_stream_alg_port_t));
-                    if (!node) {
-                        break;
-                    }
-                    node->port = port;
-                    node->listen = NULL;
-                    ngx_queue_insert_tail(&conf->alg_port, &node->node);
-                }
-            }
-        }
-
-        conf->alg_inited_once = 1;
-    }
-#endif
-
     return NGX_CONF_OK;
 }
 
@@ -2407,6 +2382,29 @@ ngx_stream_proxy_postconfiguration(ngx_conf_t *cf)
     pscf = ngx_stream_conf_get_module_srv_conf(cf, ngx_stream_proxy_module);
     if (!pscf) {
         return NGX_ERROR;
+    }
+
+    if (!pscf->alg_inited_once) {
+        ngx_queue_init(&pscf->alg_port);
+
+        if ((pscf->alg_port_min != NGX_CONF_UNSET_UINT) && (pscf->alg_port_max != NGX_CONF_UNSET_UINT)) {
+            if (pscf->alg_port_max >= pscf->alg_port_min) {
+                ngx_stream_alg_port_t *node;
+                ngx_uint_t port;
+
+                for (port = pscf->alg_port_min; port <= pscf->alg_port_max; port++) {
+                    node = ngx_pcalloc(pscf->pool, sizeof(ngx_stream_alg_port_t));
+                    if (!node) {
+                        break;
+                    }
+                    node->port = port;
+                    node->listen = NULL;
+                    ngx_queue_insert_tail(&pscf->alg_port, &node->node);
+                }
+            }
+        }
+
+        pscf->alg_inited_once = 1;
     }
 
     ops.hash = ngx_stream_alg_hash;
