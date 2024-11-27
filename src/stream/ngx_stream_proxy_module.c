@@ -526,7 +526,7 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
     if (htbl) { // data session
         ngx_socket_t fd;
 
-        ngx_stream_session_t *parent;
+        //ngx_stream_session_t *parent;
         ngx_stream_alg_key_t key;
         ngx_stream_alg_val_t *val;
         ngx_htbl_elm_t *elm;
@@ -569,8 +569,8 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
         s->key = elm->key;
 
         /** link child session to parent session */
-        parent = (ngx_stream_session_t *)ls->parent;
-        ngx_stream_alg_add_child_session(parent, s);
+        //parent = (ngx_stream_session_t *)ls->parent;
+        //ngx_stream_alg_add_child_session(parent, s);
 
         goto resolved;
     }
@@ -2057,7 +2057,7 @@ ngx_stream_proxy_finalize(ngx_stream_session_t *s, ngx_uint_t rc)
             s->peer = NULL;
             s->key = NULL;
 
-            ngx_stream_alg_del_child_session(ls->parent, s);
+            // ngx_stream_alg_del_child_session(ls->parent, s);
         }
     } else { // ctrl session
         ngx_stream_alg_finalize_child_session(s, ngx_stream_proxy_finalize);
