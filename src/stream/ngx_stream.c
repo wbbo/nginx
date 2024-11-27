@@ -524,10 +524,6 @@ ngx_stream_optimize_servers(ngx_conf_t *cf, ngx_array_t *ports)
 
             ls->servers = stport;
 
-            if (!alg_listen_servers) {
-                alg_listen_servers = ls->servers;
-            }
-
             stport->naddrs = i + 1;
 
             switch (ls->sockaddr->sa_family) {

@@ -22,6 +22,8 @@
 
 static ngx_stream_alg_ctx_t alg_ctx;
 
+extern void *alg_listen_servers;
+
 void *ngx_stream_alg_alloc(void *pool, size_t size)
 {
     return ngx_slab_alloc((ngx_slab_pool_t *)pool, size);
@@ -462,6 +464,8 @@ ngx_stream_alg_process_ftp(ngx_stream_session_t *s, ngx_buf_t *buffer)
             ls->parent = s;
             ctx = ls->data_link;
             htbl = ctx->htbl;
+
+            alg_listen_servers = c->listening->servers;
         } else {
             /**
              * TODO : system auto alloc.
