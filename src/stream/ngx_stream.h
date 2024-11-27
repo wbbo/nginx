@@ -216,6 +216,8 @@ struct ngx_stream_session_s {
     void                           *alg_port; /** ngx_stream_alg_port_t, for ctrl session */
     ngx_stream_upstream_resolved_t *peer;     /** resovled upstream, for data session */
     void                           *key;      /** ngx_stream_alg_key_t for resolved peer */
+    ngx_queue_t                    childs;    /** childs session queue, for ctrl session */
+    void                           *alg_session;     /** ngx_stream_alg_session_t, for data session */
 #endif
 
 #if (NGX_PCRE)

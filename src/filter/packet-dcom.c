@@ -1323,7 +1323,7 @@ dissect_dcom_server_alive2(ngx_buf_t *buffer, ngx_int_t offset, bool endian)
 {
     uint32_t v32, p_array_size;
 
-    NGX_PRINT_HEX(buffer->pos, ngx_buf_size(buffer), "1");
+    // NGX_PRINT_HEX(buffer->pos, ngx_buf_size(buffer), "1");
 
     // ComVersion
     offset = dissect_dcom_COMVERSION(buffer, offset, endian, NULL, NULL);
@@ -1397,7 +1397,7 @@ dissect_dcom_resolve_oxid2(ngx_buf_t *buffer, ngx_int_t offset, bool endian)
 {
     uint32_t v32, p_array_size;
 
-    NGX_PRINT_HEX(buffer->pos, ngx_buf_size(buffer), "1");
+    // NGX_PRINT_HEX(buffer->pos, ngx_buf_size(buffer), "1");
 
     // Pointer
     offset = dissect_dcom_dcerpc_pointer(buffer, offset, endian, &v32);
@@ -1438,7 +1438,7 @@ dissect_dcom_resolve_oxid2(ngx_buf_t *buffer, ngx_int_t offset, bool endian)
 ngx_int_t
 dissect_dcom_create_instance(ngx_buf_t *buffer, ngx_int_t offset, bool endian)
 {
-    NGX_PRINT_HEX(buffer->pos, ngx_buf_size(buffer), "1");
+    // NGX_PRINT_HEX(buffer->pos, ngx_buf_size(buffer), "1");
 
     // ORPCthat
     offset = dissect_dcom_that(buffer, offset, endian);
@@ -1607,7 +1607,7 @@ dissect_dcom_resp(ngx_buf_t *buffer, ngx_int_t offset, dcom_resp_t type, ngx_int
         setv16(buffer->pos + 8, offset - p_start, _endian);
     }
 
-    NGX_PRINT_HEX(buffer->pos, ngx_buf_size(buffer), "2");
+    // NGX_PRINT_HEX(buffer->pos, ngx_buf_size(buffer), "2");
 
     return rv;
 }

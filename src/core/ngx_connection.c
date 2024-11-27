@@ -93,6 +93,7 @@ ngx_create_listening(ngx_conf_t *cf, struct sockaddr *sockaddr,
 
 #if (NGX_STREAM_ALG)
     ls->data_link = NULL;
+    ls->parent = NULL;
 #endif
 
     return ls;

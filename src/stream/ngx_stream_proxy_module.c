@@ -481,7 +481,12 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
                 ngx_stream_proxy_downstream_handler,
                 NGX_STREAM_ALG_DOWNSTREAM
             );
+
+        s->peer = NULL;
+        s->key = NULL;
+        ngx_queue_init(&s->childs);
     } else {
+        s->alg_port = NULL;
         htbl = alg_ctx->htbl;
     }
 
@@ -514,6 +519,7 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
     if (htbl) { // data session
         ngx_socket_t fd;
 
+        ngx_stream_session_t *parent;
         ngx_stream_alg_key_t key;
         ngx_stream_alg_val_t *val;
         ngx_htbl_elm_t *elm;
@@ -542,6 +548,11 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
         }
 
         val = elm->value;
+        NGX_PRINT("search info: downstream ip[%ud] listen ip[%ud] listen port[%ud] upstream ip[%ud] upstream port[%ud]",
+          key.downstream_ip, key.listen_ip, ntohs(key.listen_port),
+          val->addr.sin_addr.s_addr, ntohs(val->addr.sin_port));
+
+
         u->resolved = &val->peer;
         /**
          * reserve in session avoid hash search for next time.
@@ -549,6 +560,10 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
          */
         s->peer = u->resolved;
         s->key = elm->key;
+
+        /** link child session to parent session */
+        parent = (ngx_stream_session_t *)ls->parent;
+        ngx_stream_alg_add_child_session(parent, s);
 
         goto resolved;
     }
@@ -2022,17 +2037,24 @@ ngx_stream_proxy_finalize(ngx_stream_session_t *s, ngx_uint_t rc)
     ngx_stream_alg_ctx_t *alg_ctx;
     ngx_htbl_t *htbl;
 
-    if (s->peer) { // data session
-        ls = s->connection->listening;
-        alg_ctx = ls->data_link;
-        htbl = alg_ctx->htbl;
-        ngx_htbl_remove(htbl, s->key);
-        s->peer = NULL;
-        s->key = NULL;
-    } else { // ctrl session
-        if (s->alg_port) {
-            ngx_stream_alg_free_port(s);
+    if (!s->alg_port) { // data session
+        ngx_stream_alg_key_t *key = (ngx_stream_alg_key_t *)s->key;
+        if (key) {
+            NGX_PRINT("remove info: downstream ip[%ud] listen ip[%ud] listen port[%ud]",
+            key->downstream_ip, key->listen_ip, ntohs(key->listen_port));
+
+            ls = s->connection->listening;
+            alg_ctx = ls->data_link;
+            htbl = alg_ctx->htbl;
+            ngx_htbl_remove(htbl, s->key);
+            s->peer = NULL;
+            s->key = NULL;
+
+            ngx_stream_alg_del_child_session(ls->parent, s);
         }
+    } else { // ctrl session
+        ngx_stream_alg_finalize_child_session(s, ngx_stream_proxy_finalize);
+        ngx_stream_alg_free_port(s);
     }
 
 #endif

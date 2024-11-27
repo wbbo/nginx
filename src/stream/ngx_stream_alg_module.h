@@ -56,6 +56,12 @@
 #define NGX_STREAM_ALG_PROTO_BACNET      (NGX_STREAM_ALG_PROTO_INDUSTRIAL + 10)
 #define NGX_STREAM_ALG_PROTO_ETHERNET_IP (NGX_STREAM_ALG_PROTO_INDUSTRIAL + 11)
 
+// child session node
+typedef struct {
+    ngx_queue_t node;
+    void *session;
+} ngx_stream_alg_session_t;
+
 // user defiend listening port for alg
 typedef struct {
     ngx_uint_t port;                        /** port */
@@ -105,6 +111,15 @@ ngx_stream_alg_hash(void *key);
 
 bool
 ngx_stream_alg_compare(void *key1, void *key2);
+
+void
+ngx_stream_alg_add_child_session(ngx_stream_session_t *parent, ngx_stream_session_t *child);
+
+void
+ngx_stream_alg_del_child_session(ngx_stream_session_t *parent, ngx_stream_session_t *child);
+
+void
+ngx_stream_alg_finalize_child_session(ngx_stream_session_t *parent, void (*proxy_session_finalize)(ngx_stream_session_t *, ngx_uint_t));
 
 ngx_int_t
 ngx_stream_alg_add_listening(ngx_conf_t *cf, ngx_uint_t port, ngx_listening_t **listen);

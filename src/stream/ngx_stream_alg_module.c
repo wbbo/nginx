@@ -52,14 +52,52 @@ bool ngx_stream_alg_compare(void *key1, void *key2)
     return true;
 }
 
+void ngx_stream_alg_cycle_port(ngx_stream_session_t *s, bool forward)
+{
+    ngx_stream_proxy_srv_conf_t *pscf;
+    ngx_queue_t *p;
+
+    pscf = ngx_stream_get_module_srv_conf(s, ngx_stream_proxy_module);
+    if (!pscf) {
+        ngx_log_error(NGX_LOG_ERR, s->connection->log, 0, "proxy srv conf null");
+        return;
+    }
+
+    if (ngx_queue_empty(&pscf->alg_port)
+        || (pscf->alg_port_min > pscf->alg_port_max)) {
+        ngx_log_error(NGX_LOG_ERR, s->connection->log, 0,
+            "proxy srv conf %p alg port queue empty",
+            pscf
+        );
+
+        return;
+    }
+
+    if (forward) {
+        p = ngx_queue_head(&pscf->alg_port);
+        ngx_queue_remove(p);
+        ngx_queue_insert_tail(&pscf->alg_port, p);
+    } else {
+        p = ngx_queue_last(&pscf->alg_port);
+        ngx_queue_remove(p);
+        ngx_queue_insert_head(&pscf->alg_port, p);
+    }
+
+    return;
+}
+
+
 ngx_stream_alg_port_t * ngx_stream_alg_get_port(ngx_stream_session_t *s)
 {
     ngx_stream_proxy_srv_conf_t *pscf;
     ngx_stream_alg_port_t *alg_port;
     ngx_queue_t *p;
 
+#if 0
     if (s->alg_port) {
         alg_port = (ngx_stream_alg_port_t *)(s->alg_port);
+
+        NGX_PRINT("[1] stream %p has alg port %ud", s, alg_port->port);
 
         ngx_log_debug(NGX_LOG_DEBUG_STREAM, s->connection->log, 0,
             "stream %p alg_port %p port %d",
@@ -68,6 +106,7 @@ ngx_stream_alg_port_t * ngx_stream_alg_get_port(ngx_stream_session_t *s)
 
         return alg_port;
     }
+#endif
 
     pscf = ngx_stream_get_module_srv_conf(s, ngx_stream_proxy_module);
     if (!pscf) {
@@ -89,18 +128,15 @@ ngx_stream_alg_port_t * ngx_stream_alg_get_port(ngx_stream_session_t *s)
     alg_port = ngx_queue_data(p, ngx_stream_alg_port_t, node);
     s->alg_port = alg_port;
 
+    NGX_PRINT("[2] stream %p bind to alg_port %ud", s, alg_port->port);
+
     ngx_log_debug(NGX_LOG_DEBUG_STREAM, s->connection->log, 0,
         "stream %p alg port %p port %d",
         s, alg_port, alg_port->port
     );
 
-    /**
-     * move this node to queue tail. for next time, we will
-     * get a new node. it's a simple implementation for alg_port
-     * cycle.
-     */
-    ngx_queue_remove(p);
-    ngx_queue_insert_tail(&pscf->alg_port, p);
+    /** simple implementation of port cycle */
+    ngx_stream_alg_cycle_port(s, true);
 
     return alg_port;
 }
@@ -123,6 +159,82 @@ void ngx_stream_alg_free_port(ngx_stream_session_t *s)
     s->alg_port = NULL;
 
     return;
+}
+
+void
+ngx_stream_alg_add_child_session(ngx_stream_session_t *parent, ngx_stream_session_t *child)
+{
+    ngx_stream_proxy_srv_conf_t *pscf;
+    ngx_stream_alg_session_t *node;
+
+    if (!parent || !child) {
+        return;
+    }
+
+    pscf = ngx_stream_get_module_srv_conf(parent, ngx_stream_proxy_module);
+    if (!pscf) {
+        ngx_log_error(NGX_LOG_ERR, parent->connection->log, 0, "proxy srv conf null");
+        return;
+    }
+
+    node = ngx_pcalloc(pscf->pool, sizeof(ngx_stream_alg_session_t));
+    if (!node) {
+        ngx_log_error(NGX_LOG_ERR, parent->connection->log, 0, "no mem");
+        return;
+    }
+    node->session = child;
+    child->alg_session = node;
+
+    NGX_PRINT("add child %p to parent %p", child, parent);
+
+    ngx_queue_insert_tail(&parent->childs, &node->node);
+}
+
+void
+ngx_stream_alg_del_child_session(ngx_stream_session_t *parent, ngx_stream_session_t *child)
+{
+    ngx_stream_proxy_srv_conf_t *pscf;
+    ngx_stream_alg_session_t *node;
+
+    if (!parent || !child) {
+        return;
+    }
+
+    pscf = ngx_stream_get_module_srv_conf(parent, ngx_stream_proxy_module);
+    if (!pscf) {
+        ngx_log_error(NGX_LOG_ERR, parent->connection->log, 0, "proxy srv conf null");
+        return;
+    }
+
+    node = (ngx_stream_alg_session_t *)child->alg_session;
+    if (!node) {
+        ngx_log_error(NGX_LOG_ERR, parent->connection->log, 0, "alg session null");
+        return;
+    }
+
+    ngx_queue_remove(&node->node);
+    ngx_pfree(pscf->pool, node);
+
+    NGX_PRINT("remove child %p from parent %p", child, parent);
+}
+
+void
+ngx_stream_alg_finalize_child_session(ngx_stream_session_t *parent, void (*proxy_session_finalize)(ngx_stream_session_t *, ngx_uint_t))
+{
+    ngx_stream_alg_session_t *node;
+    ngx_stream_session_t *child;
+    ngx_queue_t *q;
+
+    if (!parent) {
+        return;
+    }
+
+    while (!ngx_queue_empty(&parent->childs)) {
+        q = ngx_queue_head(&parent->childs);
+        node = ngx_queue_data(q, ngx_stream_alg_session_t, node);
+        child = node->session;
+        proxy_session_finalize(child, 0);
+    }
 }
 
 ngx_int_t
@@ -178,6 +290,9 @@ ngx_stream_alg_add_listening(ngx_conf_t *cf, ngx_uint_t port, ngx_listening_t **
 #if (NGX_HAVE_REUSEPORT)
     ls->reuseport = 0;
 #endif
+
+    ls->data_link = NULL;
+    ls->parent = NULL;
 
     if (listen) {
         *listen = ls;
@@ -344,6 +459,7 @@ ngx_stream_alg_process_ftp(ngx_stream_session_t *s, ngx_buf_t *buffer)
             }
             port2 = alg_port->port;
             ls = alg_port->listen;
+            ls->parent = s;
             ctx = ls->data_link;
             htbl = ctx->htbl;
         } else {
@@ -494,6 +610,7 @@ ngx_stream_alg_process_opcda(ngx_stream_session_t *s, ngx_buf_t *buffer)
             }
             port = alg_port->port;
             ls = alg_port->listen;
+            ls->parent = s;
             ctx = ls->data_link;
             htbl = ctx->htbl;
         } else { // system auto alloc
@@ -550,6 +667,7 @@ ngx_stream_alg_process_opcda(ngx_stream_session_t *s, ngx_buf_t *buffer)
     len = sizeof(struct sockaddr_in);
     ngx_memzero(&addr, len);
     fd = s->upstream->peer.connection->fd; // upstream address
+
     if (getpeername(fd, (struct sockaddr *)&addr, &len)) {
         ngx_log_error(NGX_LOG_ERR, s->connection->log, 0, "invalid socket fd");
         goto err;
@@ -569,6 +687,10 @@ ngx_stream_alg_process_opcda(ngx_stream_session_t *s, ngx_buf_t *buffer)
         goto err;
     }
 
+    NGX_PRINT("insert elm: downstream ip[%ud] listen ip[%ud] listen port[%ud] upstream ip[%ud] upstream port[%ud]",
+        key->downstream_ip, key->listen_ip, ntohs(key->listen_port),
+        val->addr.sin_addr.s_addr, ntohs(val->addr.sin_port));
+
 done:
     return NGX_OK;
 
@@ -586,7 +708,7 @@ err:
     return NGX_ERROR;
 }
 
-static ngx_int_t ngx_stream_alg_process(ngx_event_t *ev,
+static ngx_int_t ngx_stream_alg_process(ngx_event_t *ev, 
         ngx_int_t stream_direction)
 {
     ngx_connection_t *c;
@@ -598,11 +720,11 @@ static ngx_int_t ngx_stream_alg_process(ngx_event_t *ev,
     ngx_int_t rc;
     ngx_stream_core_srv_conf_t *cscf;
     ngx_stream_proxy_srv_conf_t *pscf;
-
+    
     c = ev->data;
     s = c->data;
     u = s->upstream;
-
+    
     cscf = ngx_stream_get_module_srv_conf(s, ngx_stream_core_module);
     if (!cscf) {
         ngx_log_error(NGX_LOG_ERR, c->log, NGX_EINVAL, "stream core srv conf null");
@@ -625,7 +747,7 @@ static ngx_int_t ngx_stream_alg_process(ngx_event_t *ev,
     } else if (c->read->timer_set) {
     } else {
     }
-
+    
     if (!c->buffer) {
         c->buffer = ngx_create_temp_buf(c->pool, cscf->preread_buffer_size);
         if (!c->buffer) {
@@ -649,7 +771,7 @@ static ngx_int_t ngx_stream_alg_process(ngx_event_t *ev,
         ngx_log_debug(NGX_LOG_DEBUG, c->log, 0, "read not ready");
         return NGX_OK;
     }
-
+    
     n = c->recv(c, c->buffer->last, size);
     if (n == NGX_ERROR || n == 0) {
         if (ngx_handle_read_event(c->read, NGX_CLOSE_EVENT) != NGX_OK) {
@@ -668,7 +790,7 @@ static ngx_int_t ngx_stream_alg_process(ngx_event_t *ev,
 
     /**
      * only OPC_CLASSIC and FTP has dynamic port, other alg_proto
-     * just let pass.
+     * just let pass. 
      */
 
     if (pscf->alg_proto == NGX_STREAM_ALG_PROTO_FTP) {
@@ -685,7 +807,7 @@ static ngx_int_t ngx_stream_alg_process(ngx_event_t *ev,
             return rc;
         }
     }
-
+    
     if (c->buffer && c->buffer->pos < c->buffer->last) {
         chain = ngx_chain_get_free_buf(c->pool, &u->free);
         if (!chain) {
@@ -716,7 +838,7 @@ static void ngx_stream_alg_upstream_handler(ngx_event_t *ev)
     ngx_int_t rc;
     ngx_connection_t *c;
     ngx_stream_session_t *s;
-
+    
     c = ev->data;
     s = c->data;
 
@@ -728,18 +850,18 @@ static void ngx_stream_alg_upstream_handler(ngx_event_t *ev)
 
     ctx = ngx_stream_alg_get_ctx(s);
     ctx->ori_upstream_handler(ev);
-
+    
     return;
 }
 
-static void
+static void 
 ngx_stream_alg_downstream_handler(ngx_event_t *ev)
 {
     ngx_stream_alg_ctx_t *ctx;
     ngx_int_t rc;
     ngx_connection_t *c;
     ngx_stream_session_t *s;
-
+    
     c = ev->data;
     s = c->data;
 
@@ -755,12 +877,12 @@ ngx_stream_alg_downstream_handler(ngx_event_t *ev)
     return;
 }
 
-static ngx_event_handler_pt
-ngx_stream_alg_checkout_handler(ngx_stream_session_t *s, ngx_event_handler_pt handler,
+static ngx_event_handler_pt 
+ngx_stream_alg_checkout_handler(ngx_stream_session_t *s, ngx_event_handler_pt handler, 
         ngx_int_t up_down)
 {
     ngx_stream_alg_ctx_t *ctx;
-
+    
     ctx = ngx_stream_alg_get_ctx(s);
 
     if (up_down == NGX_STREAM_ALG_DOWNSTREAM) {
@@ -768,7 +890,7 @@ ngx_stream_alg_checkout_handler(ngx_stream_session_t *s, ngx_event_handler_pt ha
             ctx->ori_downstream_handler = handler;
         }
         return ctx->alg_downstream_handler;
-    }
+    } 
 
     if (up_down == NGX_STREAM_ALG_UPSTREAM) {
         if (!ctx->ori_upstream_handler) {
@@ -798,7 +920,7 @@ ngx_stream_alg_get_ctx(ngx_stream_session_t *s)
     return ctx;
 }
 
-static ngx_int_t
+static ngx_int_t 
 ngx_stream_alg_handler(ngx_stream_session_t *s)
 {
     return NGX_OK;
@@ -842,7 +964,7 @@ ngx_stream_alg_init_zone(ngx_shm_zone_t *shm_zone, void *data)
     return NGX_OK;
 }
 
-static ngx_int_t
+static ngx_int_t 
 ngx_stream_alg_postconfiguration(ngx_conf_t *cf)
 {
     ngx_stream_handler_pt        *h;
