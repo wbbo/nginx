@@ -214,6 +214,7 @@ ngx_int_t ngx_clone_listening(ngx_cycle_t *cycle, ngx_listening_t *ls);
 ngx_int_t ngx_set_inherited_sockets(ngx_cycle_t *cycle);
 ngx_int_t ngx_open_listening_sockets(ngx_cycle_t *cycle);
 ngx_int_t ngx_open_one_listening_socket(ngx_listening_t *ls);
+void ngx_close_one_listening_socket(ngx_listening_t *ls);
 void ngx_configure_listening_sockets(ngx_cycle_t *cycle);
 void ngx_close_listening_sockets(ngx_cycle_t *cycle);
 void ngx_close_connection(ngx_connection_t *c);

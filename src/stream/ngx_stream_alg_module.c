@@ -19,51 +19,80 @@
 
 #include <packet-dcom.h>
 
-ngx_int_t ngx_stream_alg_get_port(ngx_stream_session_t *s)
+ngx_stream_alg_port_t * ngx_stream_alg_get_port(ngx_stream_session_t *s)
 {
     ngx_stream_proxy_srv_conf_t *pscf;
-    ngx_queue_t *q;
+    ngx_stream_alg_port_t *alg_port;
+    ngx_queue_t *p;
 
-    if (s->alg_port) { // already have one
-        return NGX_OK;
+    if (s->alg_port) {
+        alg_port = (ngx_stream_alg_port_t *)(s->alg_port);
+
+        ngx_log_debug(NGX_LOG_DEBUG_STREAM, s->connection->log, 0,
+            "stream %p alg_port %p port %d",
+            s, alg_port, alg_port->port
+        );
+
+        return alg_port;
     }
 
     pscf = ngx_stream_get_module_srv_conf(s, ngx_stream_proxy_module);
-
-    if (ngx_queue_empty(&pscf->alg_port)) { // no port available
-        return NGX_ERROR;
+    if (!pscf) {
+        ngx_log_error(NGX_LOG_ERR, s->connection->log, 0, "proxy srv conf null");
+        return NULL;
     }
 
-    q = ngx_queue_head(&pscf->alg_port);
-    s->alg_port = ngx_queue_data(q, ngx_stream_alg_port_t, node);
+    if (ngx_queue_empty(&pscf->alg_port)
+        || (pscf->alg_port_min > pscf->alg_port_max)) {
+        ngx_log_error(NGX_LOG_ERR, s->connection->log, 0,
+            "proxy srv conf %p alg port queue empty",
+            pscf
+        );
 
-    // remove the node from queue
-    ngx_queue_remove(q);
+        return NULL;
+    }
 
-    return NGX_OK;
+    p = ngx_queue_head(&pscf->alg_port);
+    alg_port = ngx_queue_data(p, ngx_stream_alg_port_t, node);
+    s->alg_port = alg_port;
+
+    ngx_log_debug(NGX_LOG_DEBUG_STREAM, s->connection->log, 0,
+        "stream %p alg port %p port %d",
+        s, alg_port, alg_port->port
+    );
+
+    /**
+     * move this node to queue tail. for next time, we will
+     * get a new node. it's a simple implementation for alg_port
+     * cycle.
+     */
+    ngx_queue_remove(p);
+    ngx_queue_insert_tail(&pscf->alg_port, p);
+
+    return alg_port;
 }
 
 void ngx_stream_alg_free_port(ngx_stream_session_t *s)
 {
-    ngx_stream_proxy_srv_conf_t *pscf;
     ngx_stream_alg_port_t *alg_port;
 
     if (!s->alg_port) {
+        ngx_log_error(NGX_LOG_ERR, s->connection->log, 0, "stream %p has no alg_port", s);
         return;
     }
 
-    pscf = ngx_stream_get_module_srv_conf(s, ngx_stream_proxy_module);
-
     alg_port = (ngx_stream_alg_port_t *)(s->alg_port);
 
-    // free to head for next time use
+    ngx_log_debug(NGX_LOG_DEBUG_STREAM, s->connection->log, 0,
+        "stream %p free alg_port %p port %d",
+        s, alg_port, alg_port->port
+    );
     s->alg_port = NULL;
-    ngx_queue_insert_head(&pscf->alg_port, &alg_port->node);
 
     return;
 }
 
-static ngx_int_t ngx_stream_alg_new_listen(ngx_stream_session_t *s, ngx_uint_t port)
+static ngx_int_t ngx_stream_alg_new_listen(ngx_stream_session_t *s, ngx_uint_t port, ngx_listening_t **listen)
 {
     ngx_connection_t *c;
     ngx_listening_t *ori, *new;
@@ -115,6 +144,10 @@ static ngx_int_t ngx_stream_alg_new_listen(ngx_stream_session_t *s, ngx_uint_t p
 
     _port = ntohs(addr2.sin_port);
     ngx_snprintf(new->addr_text.data, new->addr_text.len, "0.0.0.0:%ud", _port);
+
+    if (listen) {
+        *listen = new;
+    }
 
     return _port;
 }
@@ -233,9 +266,10 @@ ngx_stream_alg_process_ftp(ngx_stream_session_t *s, ngx_buf_t *buffer)
     }
 
     if (ftp_mode) {
+        ngx_stream_proxy_srv_conf_t *pscf;
         ngx_stream_alg_port_t *alg_port;
         ngx_int_t rv;
-        ngx_int_t port = 0;
+        ngx_int_t port;
         ngx_uint_t retry = 0;
         p += 1;
         q -= 1;
@@ -265,15 +299,30 @@ ngx_stream_alg_process_ftp(ngx_stream_session_t *s, ngx_buf_t *buffer)
             return NGX_OK;
         }
 
-        rv = ngx_stream_alg_get_port(s);
-        if (rv != NGX_OK) {
-            ngx_log_debug(NGX_LOG_DEBUG_STREAM, c->log, 0, "no data port available");
+        /**
+         * data link port come from:
+         * 1. system auto alloc when a router be used.
+         * 2. user defined when a firewall be used.
+         */
+        pscf = ngx_stream_get_module_srv_conf(s, ngx_stream_proxy_module);
+        if (!pscf) {
+            ngx_log_error(NGX_LOG_ERR, c->log, 0, "proxy srv conf null");
             return NGX_ERROR;
         }
 
-        alg_port = (ngx_stream_alg_port_t *)(s->alg_port);
+        if (pscf->alg_port_min != NGX_CONF_UNSET_UINT) { // user defined
+            alg_port = ngx_stream_alg_get_port(s);
+            if (!alg_port) {
+                ngx_log_error(NGX_LOG_ERR, c->log, 0, "no alg port available");
+                return NGX_ERROR;
+            }
+            port = alg_port->port;
+        } else { // system auto alloc
+            port = 0;
+        }
+
         do {
-            port = ngx_stream_alg_new_listen(s, alg_port->port);
+            port = ngx_stream_alg_new_listen(s, port, NULL);
         } while(port <= 0 && retry++ < 5);
 
         if (port <= 0) {
@@ -311,12 +360,13 @@ ngx_stream_alg_process_opcda(ngx_stream_session_t *s, ngx_buf_t *buffer)
 {
     ngx_stream_alg_ctx_t *ctx;
     ngx_stream_upstream_resolved_t *peer;
-    ngx_stream_alg_port_t *alg_port;
+    ngx_stream_alg_port_t *alg_port = NULL;
     ngx_socket_t fd;
     struct sockaddr_in addr, *paddr;
     socklen_t addrlen;
     filter_dcom_data_t d;
-    ngx_int_t new_port;
+    ngx_listening_t *listen = NULL;
+    ngx_int_t port = 0;
     ngx_int_t retry;
     ngx_int_t offset, endian;
     dcom_resp_t type;
@@ -358,25 +408,44 @@ ngx_stream_alg_process_opcda(ngx_stream_session_t *s, ngx_buf_t *buffer)
     );
 
     offset = dissect_dcom_resp_hdr(buffer, 0, &type, &endian);
-    if ((type == DCOM_RESP_RESOLVE_OXID2)
-        || (type == DCOM_RESP_CREATE_INSTANCE)) {
-        /**
-         * TODO:
-         * if is retrans of dcom response, s->alg_port maybe set last time
-         * and listening socket on s->alg_port already open. in this case,
-         * we can't free the alg_port.
+    if ((type == DCOM_RESP_RESOLVE_OXID2) || (type == DCOM_RESP_CREATE_INSTANCE)) { // response has dynamic port
+         /**
+         * data link port come from:
+         * 1. system auto alloc when a router be used.
+         * 2. user defined when a firewall be used.
          */
-        rv = ngx_stream_alg_get_port(s);
-        if (rv != NGX_OK) {
+        ngx_stream_proxy_srv_conf_t *pscf = ngx_stream_get_module_srv_conf(s, ngx_stream_proxy_module);
+        if (!pscf) {
+            ngx_log_error(NGX_LOG_ERR, s->connection->log, 0, "proxy srv conf null");
             return NGX_ERROR;
+        }
+
+        if (pscf->alg_port_min != NGX_CONF_UNSET_UINT) { // user defined
+            alg_port = ngx_stream_alg_get_port(s);
+            if (!alg_port) {
+                ngx_log_error(NGX_LOG_ERR, s->connection->log, 0, "no alg port available");
+                return NGX_ERROR;
+            }
+            port = alg_port->port;
+        } else { // system auto alloc
+            port = 0;
+        }
+
+        retry = 0;
+        do {
+            port = ngx_stream_alg_new_listen(s, port, &listen);
+        } while(port <= 0 && retry++ < 5);
+
+        if (port <= 0) {
+            ngx_log_error(NGX_LOG_ERR, s->connection->log, 0, "new listening port failed");
+            goto err;
         }
     }
 
-    alg_port = (ngx_stream_alg_port_t *)(s->alg_port);
-    d.iport = alg_port ? alg_port->port : 0;
-    buffer->priv = &d;
+    ngx_log_debug(NGX_LOG_DEBUG_STREAM, s->connection->log, 0, "opcda proxy port %d", port);
 
-    NGX_PRINT("dcom proxy ip %s port %d fd %d\n", d.iip, d.iport, fd);
+    d.iport = port;
+    buffer->priv = &d;
 
     rv = dissect_dcom_resp(buffer, offset, type, endian, true);
     if (rv == NGX_DECLINED) {
@@ -386,12 +455,16 @@ ngx_stream_alg_process_opcda(ngx_stream_session_t *s, ngx_buf_t *buffer)
         goto done;
     }
 
-    // resolved address
-    if (!d.oport) {
-        ngx_log_error(NGX_LOG_ERR, s->connection->log, 0, "resolve address failed");
+    if (!d.oport) { // resolve dynamic port failed
+        ngx_log_error(NGX_LOG_ERR, s->connection->log, 0, "opcda resolve dynamic port failed");
         goto err;
     }
 
+    ngx_log_debug(NGX_LOG_DEBUG_STREAM, s->connection->log, 0, "opcda upstream port %d", d.oport);
+
+    /**
+     * reserve resolved upstream address.
+     */
     addrlen = sizeof(struct sockaddr_in);
     ngx_memzero(&addr, addrlen);
     fd = s->upstream->peer.connection->fd; // upstream address
@@ -403,23 +476,6 @@ ngx_stream_alg_process_opcda(ngx_stream_session_t *s, ngx_buf_t *buffer)
     paddr = (struct sockaddr_in *)peer->sockaddr;
     *paddr = addr;
     paddr->sin_port = htons(d.oport);
-
-    #if 1
-    u_char ip[64] = {0};
-    ngx_inet_ntop(addr.sin_family, (struct sockaddr *)&addr.sin_addr, ip, INET_ADDRSTRLEN);
-    NGX_PRINT("dcom upstream ip %s port %d\n", ip, d.oport);
-    #endif
-
-    // new listening on proxy port for data link
-    retry = 0;
-    do {
-        new_port = ngx_stream_alg_new_listen(s, d.iport);
-    } while(new_port <= 0 && retry++ < 5);
-
-    if (new_port <= 0) {
-        ngx_log_error(NGX_LOG_ERR, s->connection->log, 0, "new listening port failed");
-        goto err;
-    }
 
     peer->socklen = sizeof(struct sockaddr_in);
     peer->naddrs = 1;
@@ -433,6 +489,11 @@ err:
     if (alg_port) {
         ngx_stream_alg_free_port(s);
     }
+
+    if (listen) {
+        ngx_close_one_listening_socket(listen);
+    }
+
     return NGX_ERROR;
 }
 

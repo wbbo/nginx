@@ -440,8 +440,6 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
 
         pscf->alg_inited_once = 1;
     }
-    NGX_PRINT("new stream %p\n", s);
-    s->alg_port = NULL;
 #endif
 
     u = ngx_pcalloc(c->pool, sizeof(ngx_stream_upstream_t));
@@ -1993,20 +1991,20 @@ ngx_stream_proxy_finalize(ngx_stream_session_t *s, ngx_uint_t rc)
                    "finalize stream proxy: %i", rc);
 
 #if (NGX_STREAM_ALG)
-    ngx_stream_alg_ctx_t       *ctx;
-    ctx = ngx_stream_get_module_ctx(s, ngx_stream_alg_module);
-    if (ctx ) {
+    ngx_stream_alg_ctx_t *ctx = ngx_stream_get_module_ctx(s, ngx_stream_alg_module);
+    if (ctx ) { // parrent session
         if (ctx->alg_resolved_peer) {
-            ngx_pfree(s->connection->pool,ctx->alg_resolved_peer->sockaddr);
-            ngx_pfree(s->connection->pool,ctx->alg_resolved_peer);
+            if (ctx->alg_resolved_peer->sockaddr) {
+                ngx_pfree(s->connection->pool, ctx->alg_resolved_peer->sockaddr);
+            }
+            ngx_pfree(s->connection->pool, ctx->alg_resolved_peer);
         }
         ngx_pfree(s->connection->pool,ctx);
-    } else {
-        /*child session. Need to close the listening socket.*/
-        /*TODO the listening sockets need to be orgnized*/
-        ngx_close_connection(s->connection->listening->connection);
-        ngx_pfree(s->connection->pool,s->connection->listening);
+    } else { // child session
+        ngx_close_one_listening_socket(s->connection->listening);
+        ngx_pfree(s->connection->pool, s->connection->listening);
     }
+
     if (s->alg_port) {
         ngx_stream_alg_free_port(s);
     }

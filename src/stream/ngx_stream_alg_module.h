@@ -81,7 +81,7 @@ typedef struct {
 
 extern ngx_module_t ngx_stream_alg_module;
 
-ngx_int_t
+ngx_stream_alg_port_t *
 ngx_stream_alg_get_port(ngx_stream_session_t *s);
 
 void
