@@ -2091,7 +2091,6 @@ ngx_stream_proxy_finalize(ngx_stream_session_t *s, ngx_uint_t rc)
             s->key = NULL;
         }
     } else { // ctrl session
-        ngx_stream_alg_finalize_child_session(s, ngx_stream_proxy_finalize);
         ngx_stream_alg_free_port(s);
     }
 
