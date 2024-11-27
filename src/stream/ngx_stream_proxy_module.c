@@ -10,6 +10,7 @@
 #include <ngx_stream.h>
 # if (NGX_STREAM_ALG)
     #include <ngx_stream_alg_module.h>
+    extern ngx_shmtx_t alg_relation_mutex;
 #endif
 
 static void ngx_stream_proxy_handler(ngx_stream_session_t *s);
@@ -567,7 +568,10 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
         s->peer = u->resolved;
         s->key = elm->key;
 
-        childs[val->conn_id]++;
+        if (ngx_shmtx_trylock(&alg_relation_mutex)) {
+            childs[val->conn_id]++;
+            ngx_shmtx_unlock(&alg_relation_mutex);
+        }
 
         goto resolved;
     }
@@ -1526,9 +1530,14 @@ ngx_stream_proxy_process_connection(ngx_event_t *ev, ngx_uint_t from_upstream)
         ngx_stream_alg_ctx_t *alg_ctx = ngx_stream_alg_get_ctx(s);
         uint32_t *childs = alg_ctx->childs;
 
-        if (childs[c->id]) {
-            ngx_add_timer(c->write, pscf->timeout);
-            goto done;
+        if (ngx_shmtx_trylock(&alg_relation_mutex)) {
+            if (childs[c->id]) {
+                ngx_add_timer(c->write, pscf->timeout);
+                ngx_shmtx_unlock(&alg_relation_mutex);
+                goto done;
+            }
+
+            ngx_shmtx_unlock(&alg_relation_mutex);
         }
     }
 
@@ -2081,9 +2090,13 @@ ngx_stream_proxy_finalize(ngx_stream_session_t *s, ngx_uint_t rc)
             if (elm) {
                 val = (ngx_stream_alg_val_t *)elm->value;
 
-                if (childs[val->conn_id]) {
-                    childs[val->conn_id]--;
+                if (ngx_shmtx_trylock(&alg_relation_mutex)) {
+                    if (childs[val->conn_id]) {
+                        childs[val->conn_id]--;
+                    }
+                    ngx_shmtx_unlock(&alg_relation_mutex);
                 }
+
                 ngx_htbl_remove(htbl, s->key);
             }
 

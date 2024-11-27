@@ -24,6 +24,8 @@ static ngx_stream_alg_ctx_t alg_ctx;
 
 extern void *alg_listen_servers;
 
+ngx_shmtx_t alg_relation_mutex;
+
 void *ngx_stream_alg_alloc(void *pool, size_t size)
 {
     return ngx_slab_alloc((ngx_slab_pool_t *)pool, size);
@@ -937,7 +939,20 @@ ngx_stream_alg_init_relation(ngx_shm_zone_t *shm_zone, void *data)
 {
     ngx_stream_alg_ctx_t *octx = data;
     ngx_stream_alg_ctx_t *ctx = shm_zone->data;
-    uint32_t *childs = (uint32_t *)shm_zone->shm.addr;
+    char *name = "alg_relation_mutex";
+    u_char *shared;
+
+    shared = shm_zone->shm.addr;
+    ngx_accept_mutex.spin = (ngx_uint_t) -1;
+
+    if (ngx_shmtx_create(&alg_relation_mutex, (ngx_shmtx_sh_t *)shared,
+                         (u_char *)name)
+        != NGX_OK)
+    {
+        return NGX_ERROR;
+    }
+
+    uint32_t *childs = (uint32_t *)(shared + 128);
 
     if (octx) {
         ctx->relation = octx->relation;
