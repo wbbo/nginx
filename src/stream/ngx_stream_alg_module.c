@@ -56,9 +56,9 @@ void ngx_stream_alg_free_port(ngx_stream_session_t *s)
 
     alg_port = (ngx_stream_alg_port_t *)(s->alg_port);
 
-    // free to alg queue tail
+    // free to head for next time use
     s->alg_port = NULL;
-    ngx_queue_insert_tail(&pscf->alg_port, &alg_port->node);
+    ngx_queue_insert_head(&pscf->alg_port, &alg_port->node);
 
     return;
 }
@@ -318,6 +318,8 @@ ngx_stream_alg_process_opcda(ngx_stream_session_t *s, ngx_buf_t *buffer)
     filter_dcom_data_t d;
     ngx_int_t new_port;
     ngx_int_t retry;
+    ngx_int_t offset, endian;
+    dcom_resp_t type;
     ngx_int_t rv;
 
     // alg module precheck
@@ -355,26 +357,39 @@ ngx_stream_alg_process_opcda(ngx_stream_session_t *s, ngx_buf_t *buffer)
         INET_ADDRSTRLEN
     );
 
-    rv = ngx_stream_alg_get_port(s);
-    if (rv != NGX_OK) {
-        return NGX_ERROR;
+    offset = dissect_dcom_resp_hdr(buffer, 0, &type, &endian);
+    if ((type == DCOM_RESP_RESOLVE_OXID2)
+        || (type == DCOM_RESP_CREATE_INSTANCE)) {
+        /**
+         * TODO:
+         * if is retrans of dcom response, s->alg_port maybe set last time
+         * and listening socket on s->alg_port already open. in this case,
+         * we can't free the alg_port.
+         */
+        rv = ngx_stream_alg_get_port(s);
+        if (rv != NGX_OK) {
+            return NGX_ERROR;
+        }
     }
 
     alg_port = (ngx_stream_alg_port_t *)(s->alg_port);
-    d.iport = alg_port->port;
+    d.iport = alg_port ? alg_port->port : 0;
     buffer->priv = &d;
 
     NGX_PRINT("dcom proxy ip %s port %d fd %d\n", d.iip, d.iport, fd);
 
-    rv = dissect_dcom_resp(buffer, 0, true);
+    rv = dissect_dcom_resp(buffer, offset, type, endian, true);
     if (rv == NGX_DECLINED) {
-        return NGX_OK;
+        /**
+         * no dynamic port in this packet, all work done.
+         */
+        goto done;
     }
 
     // resolved address
     if (!d.oport) {
         ngx_log_error(NGX_LOG_ERR, s->connection->log, 0, "resolve address failed");
-        return NGX_ERROR;
+        goto err;
     }
 
     addrlen = sizeof(struct sockaddr_in);
@@ -382,7 +397,7 @@ ngx_stream_alg_process_opcda(ngx_stream_session_t *s, ngx_buf_t *buffer)
     fd = s->upstream->peer.connection->fd; // upstream address
     if (getpeername(fd, (struct sockaddr *)&addr, &addrlen)) {
         ngx_log_error(NGX_LOG_ERR, s->connection->log, 0, "invalid socket fd");
-        return NGX_ERROR;
+        goto err;
     }
 
     paddr = (struct sockaddr_in *)peer->sockaddr;
@@ -403,7 +418,7 @@ ngx_stream_alg_process_opcda(ngx_stream_session_t *s, ngx_buf_t *buffer)
 
     if (new_port <= 0) {
         ngx_log_error(NGX_LOG_ERR, s->connection->log, 0, "new listening port failed");
-        return NGX_ERROR;
+        goto err;
     }
 
     peer->socklen = sizeof(struct sockaddr_in);
@@ -411,7 +426,14 @@ ngx_stream_alg_process_opcda(ngx_stream_session_t *s, ngx_buf_t *buffer)
     peer->port = htons(d.oport);
     peer->no_port = 0;
 
+done:
     return NGX_OK;
+
+err:
+    if (alg_port) {
+        ngx_stream_alg_free_port(s);
+    }
+    return NGX_ERROR;
 }
 
 static ngx_int_t ngx_stream_alg_process(ngx_event_t *ev,

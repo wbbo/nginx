@@ -334,7 +334,10 @@ ngx_int_t
 dissect_dcom_precheck(ngx_buf_t *buffer, ngx_int_t offset);
 
 ngx_int_t
-dissect_dcom_resp(ngx_buf_t *buffer, ngx_int_t offset, bool fixup);
+dissect_dcom_resp_hdr(ngx_buf_t *buffer, ngx_int_t offset, dcom_resp_t *type, ngx_int_t *endian);
+
+ngx_int_t
+dissect_dcom_resp(ngx_buf_t *buffer, ngx_int_t offset, dcom_resp_t type, ngx_int_t endian, bool fixup);
 
 // dcom interface test
 void dcom_do_test(void);

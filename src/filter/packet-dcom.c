@@ -86,7 +86,8 @@ static u_char dcom_test_data[] = {
 void dcom_do_test(void)
 {
     ngx_buf_t buffer, *b;
-    ngx_int_t offset;
+    ngx_int_t offset, endian;
+    dcom_resp_t type;
     filter_dcom_data_t filter, *f;
     u_char iip[] = "1.1.1.1";
 
@@ -98,17 +99,18 @@ void dcom_do_test(void)
     b->pos = dcom_test_data;
     b->last = b->pos + dcom_test_data_size;
     b->memory = 1; // buffer in memory flag
-    offset = 0;
+
+    if (dissect_dcom_precheck(b, 0)) {
+        return;
+    }
+
+    offset = dissect_dcom_resp_hdr(b, 0, &type, &endian);
 
     f->iport = 1234;
     ngx_memcpy(f->iip, iip, ngx_strlen(iip));
     b->priv = f;
 
-    if (dissect_dcom_precheck(b, offset)) {
-        return;
-    }
-
-    dissect_dcom_resp(b, 0, true);
+    dissect_dcom_resp(b, offset, type, endian, true);
 }
 
 // --------------------------------------- registerd GUID routines ---------------------------------------------
@@ -1539,54 +1541,70 @@ dissect_dcom_precheck(ngx_buf_t *buffer, ngx_int_t offset)
 }
 
 ngx_int_t
-dissect_dcom_resp(ngx_buf_t *buffer, ngx_int_t offset, bool fixup)
+dissect_dcom_resp_hdr(ngx_buf_t *buffer, ngx_int_t offset, dcom_resp_t *type, ngx_int_t *endian)
 {
-    dcom_resp_t type;
-    uint32_t p_start = offset;
-    bool endian;
-    ngx_int_t rv = NGX_DECLINED; // ignored
-
-    dcom_fixup = fixup;
+    dcom_resp_t _type;
+    ngx_int_t _endian;
 
     // DCE/RPC header
     dce_common_hdr_t *hdr = (dce_common_hdr_t *)(buffer->pos + offset);
     if ((hdr->drep[0] >> 4) == 0x1) { // network little endian
         if (_LITTLE_ENDIAN_) { // host little endian
-            endian = true; // same
+            _endian = 1; // same
         } else {
-            endian = false; // not same
+            _endian = 0; // not same
         }
     } else { // network big endian
         if (_BIG_ENDIAN_) { // host big endian
-            endian = true; // same
+            _endian = 1; // same
         } else {
-            endian = false; // not same
+            _endian = 0; // not same
         }
     }
     offset += DCE_COMMON_HDR_SIZE + DCE_RESP_SPEC_HDR_SIZE;
 
-    type = dissect_dcom_resp_type(buffer, offset, endian);
+    _type = dissect_dcom_resp_type(buffer, offset, endian);
+
+    if (type) {
+        *type = _type;
+    }
+    if (endian) {
+        *endian = _endian;
+    }
+
+    return offset;
+}
+
+ngx_int_t
+dissect_dcom_resp(ngx_buf_t *buffer, ngx_int_t offset, dcom_resp_t type, ngx_int_t endian, bool fixup)
+{
+    uint32_t p_start = offset - DCE_COMMON_HDR_SIZE - DCE_RESP_SPEC_HDR_SIZE; // start from header
+    bool _endian = endian ? true : false;
+    ngx_int_t rv = NGX_DECLINED; // ignored
+
+    dcom_fixup = fixup;
+
     switch (type) {
         case DCOM_RESP_SERVER_ALIVE2:
-            offset = dissect_dcom_server_alive2(buffer, offset, endian);
+            offset = dissect_dcom_server_alive2(buffer, offset, _endian);
             break;
         case DCOM_RESP_RESOLVE_OXID2:
-            offset = dissect_dcom_resolve_oxid2(buffer, offset, endian);
+            offset = dissect_dcom_resolve_oxid2(buffer, offset, _endian);
             rv = NGX_OK;
             break;
         case DCOM_RESP_CREATE_INSTANCE:
-            offset = dissect_dcom_create_instance(buffer, offset, endian);
+            offset = dissect_dcom_create_instance(buffer, offset, _endian);
             rv = NGX_OK;
             break;
         case DCOM_RESP_UNKNOWN:
-            break;
+            return rv;
         default:
-            break;
+            return rv;
     }
 
     if (dcom_fixup) {
         // fixup frag length domain
-        setv16(buffer->pos + 8, offset - p_start, endian);
+        setv16(buffer->pos + 8, offset - p_start, _endian);
     }
 
     NGX_PRINT_HEX(buffer->pos, ngx_buf_size(buffer), "2");
