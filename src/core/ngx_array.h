@@ -49,5 +49,10 @@ ngx_array_init(ngx_array_t *array, ngx_pool_t *pool, ngx_uint_t n, size_t size)
     return NGX_OK;
 }
 
+static ngx_inline void *
+ngx_array_get(ngx_array_t *a, ngx_uint_t n)
+{
+    return n > a->nelts - 1 ? NULL : (u_char *)(a->elts) + n * a->size;
+}
 
 #endif /* _NGX_ARRAY_H_INCLUDED_ */

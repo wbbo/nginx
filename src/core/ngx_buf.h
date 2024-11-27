@@ -53,6 +53,9 @@ struct ngx_buf_s {
     unsigned         temp_file:1;
 
     /* STUB */ int   num;
+
+    /* private use */
+    void             *priv;
 };
 
 

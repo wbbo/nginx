@@ -131,6 +131,8 @@ STREAM_UPSTREAM_RANDOM=YES
 STREAM_UPSTREAM_ZONE=YES
 STREAM_SSL_PREREAD=NO
 
+STREAM_ALG=NO
+
 DYNAMIC_MODULES=
 DYNAMIC_MODULES_SRCS=
 
@@ -336,6 +338,7 @@ use the \"--with-mail_ssl_module\" option instead"
                                          STREAM_UPSTREAM_RANDOM=NO  ;;
         --without-stream_upstream_zone_module)
                                          STREAM_UPSTREAM_ZONE=NO    ;;
+        --with-stream_alg)               STREAM_ALG=YES             ;;
 
         --with-google_perftools_module)  NGX_GOOGLE_PERFTOOLS=YES   ;;
         --with-cpp_test_module)          NGX_CPP_TEST=YES           ;;

@@ -8,6 +8,7 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 
+uint16_t host_endian = 0x1234;
 
 static u_char *ngx_sprintf_num(u_char *buf, u_char *last, uint64_t ui64,
     u_char zero, ngx_uint_t hexadecimal, ngx_uint_t width);
@@ -2084,3 +2085,52 @@ ngx_memcpy(void *dst, const void *src, size_t n)
 }
 
 #endif
+
+void
+ngx_print_hex(u_char *start, ngx_uint_t size, const char *desc)
+{
+    u_char *p, *q, *last;
+    u_char hex[NGX_PRINT_HEX_SIZE];
+    ngx_uint_t i;
+
+    p = hex;
+    last = hex + NGX_PRINT_HEX_SIZE;
+    q = start;
+
+    if (size > 1500) {
+        p = ngx_slprintf(p, last, "%s", "buffer size over 1500, ignored");
+        goto done;
+    }
+
+    p = ngx_slprintf(p, last, "---- %s size %d ----", desc ? desc : "", size);
+    ngx_linefeed(p);
+
+    for (i = 0; i < size; i++) {
+        p = ngx_slprintf(p, last, "%02xd ", q[i]);
+        if ((i + 1) % 16 == 0) { // 16 bytes per line
+            p = ngx_slprintf(p, last, " [%ud]", i + 1);
+            ngx_linefeed(p);
+        }
+    }
+
+    ngx_linefeed(p);
+
+done:
+    (void) ngx_write_console(ngx_stdout, hex, p - hex);
+}
+
+void ngx_print(const char *fmt, ...)
+{
+    va_list args;
+    u_char *p, *last;
+    u_char tmp[1024] = {0};
+    p = tmp;
+    last = p + 1024;
+
+    va_start(args, fmt);
+    p = ngx_vslprintf(p, last, fmt, args);
+    va_end(args);
+
+    ngx_linefeed(p);
+    (void) ngx_write_console(ngx_stdout, tmp, p - tmp);
+}

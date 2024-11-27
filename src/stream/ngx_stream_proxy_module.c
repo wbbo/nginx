@@ -8,7 +8,9 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_stream.h>
-
+# if (NGX_STREAM_ALG)
+    #include <ngx_stream_alg_module.h>
+#endif
 
 typedef struct {
     ngx_addr_t                      *addr;
@@ -429,6 +431,25 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
     c->write->handler = ngx_stream_proxy_downstream_handler;
     c->read->handler = ngx_stream_proxy_downstream_handler;
 
+#if (NGX_STREAM_ALG)
+    {
+        ngx_stream_alg_main_conf_t *amcf;
+        ngx_stream_session_t *parent;
+        parent = c->listening->parent_stream_session;
+        if (!parent) {
+            amcf = ngx_stream_get_module_main_conf(s,ngx_stream_alg_module);
+            if (amcf) {
+                c->write->handler = (amcf->alg_checkout_stream_handler)(s,
+                        ngx_stream_proxy_downstream_handler,
+                        NGX_STREAM_ALG_DOWNSTREAM);
+                c->read->handler = (amcf->alg_checkout_stream_handler)(s,
+                        ngx_stream_proxy_downstream_handler,
+                        NGX_STREAM_ALG_DOWNSTREAM);
+            }
+        }
+    }
+#endif
+
     s->upstream_states = ngx_array_create(c->pool, 1,
                                           sizeof(ngx_stream_upstream_state_t));
     if (s->upstream_states == NULL) {
@@ -450,14 +471,38 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
     if (c->read->ready) {
         ngx_post_event(c->read, &ngx_posted_events);
     }
-
+#if (NGX_STREAM_ALG)
+    ngx_stream_session_t *parent;
+    parent = c->listening->parent_stream_session;
+    if (parent) {
+        ngx_stream_alg_ctx_t       *ctx;
+        ctx = ngx_stream_get_module_ctx(parent, ngx_stream_alg_module);
+        if (ctx && ctx->alg_resolved_peer) {
+            ngx_log_debug0(NGX_LOG_DEBUG_STREAM, c->log, 0,
+                    "Alg data connection, don't need to select server.");
+            u->resolved = ctx->alg_resolved_peer;
+            goto resolved;
+        } else {
+            ngx_log_debug0(NGX_LOG_DEBUG_STREAM, c->log, 0,
+                    "ctx or alg resolved peer is invalidate.");
+            ngx_stream_proxy_finalize(s, NGX_STREAM_INTERNAL_SERVER_ERROR);
+            return;
+            /*error*/
+        }
+    } else {
+           ngx_log_debug0(NGX_LOG_DEBUG_STREAM, c->log, 0,
+                   "Don't find the parent session.");
+    }
+#endif
     if (pscf->upstream_value) {
         if (ngx_stream_proxy_eval(s, pscf) != NGX_OK) {
             ngx_stream_proxy_finalize(s, NGX_STREAM_INTERNAL_SERVER_ERROR);
             return;
         }
     }
-
+#if (NGX_STREAM_ALG)
+resolved:
+#endif
     if (u->resolved == NULL) {
 
         uscf = pscf->upstream;
@@ -719,7 +764,18 @@ ngx_stream_proxy_connect(ngx_stream_session_t *s)
     u->state->connect_time = (ngx_msec_t) -1;
     u->state->first_byte_time = (ngx_msec_t) -1;
     u->state->response_time = (ngx_msec_t) -1;
-
+#if (NGX_STREAM_ALG)
+    ngx_stream_session_t *parent;
+    parent = s->connection->listening->parent_stream_session;
+    if (parent) {
+        ngx_stream_alg_ctx_t       *ctx;
+        ctx = ngx_stream_get_module_ctx(parent, ngx_stream_alg_module);
+        if (ctx && ctx->alg_resolved_peer) {
+            u->peer.sockaddr = ctx->alg_resolved_peer->sockaddr;
+            u->peer.socklen = ctx->alg_resolved_peer->socklen;
+        }
+    }
+#endif
     rc = ngx_event_connect_peer(&u->peer);
 
     ngx_log_debug1(NGX_LOG_DEBUG_STREAM, c->log, 0, "proxy connect: %i", rc);
@@ -916,6 +972,25 @@ ngx_stream_proxy_init_upstream(ngx_stream_session_t *s)
 
     pc->read->handler = ngx_stream_proxy_upstream_handler;
     pc->write->handler = ngx_stream_proxy_upstream_handler;
+
+#if (NGX_STREAM_ALG)
+    {
+        ngx_stream_alg_main_conf_t *amcf;
+        ngx_stream_session_t *parent;
+        parent = c->listening->parent_stream_session;
+        if (!parent) {
+            amcf = ngx_stream_get_module_main_conf(s,ngx_stream_alg_module);
+            if (amcf) {
+                pc->write->handler = (amcf->alg_checkout_stream_handler)(s,
+                        ngx_stream_proxy_upstream_handler,
+                        NGX_STREAM_ALG_UPSTREAM);
+                pc->read->handler = (amcf->alg_checkout_stream_handler)(s,
+                        ngx_stream_proxy_upstream_handler,
+                        NGX_STREAM_ALG_UPSTREAM);
+            }
+        }
+    }
+#endif
 
     if (pc->read->ready) {
         ngx_post_event(pc->read, &ngx_posted_events);
@@ -1439,7 +1514,8 @@ ngx_stream_proxy_process_connection(ngx_event_t *ev, ngx_uint_t from_upstream)
         return;
     }
 
-    ngx_stream_proxy_process(s, from_upstream, ev->write);
+    ngx_stream_proxy_process(s, from_upstream, 1);
+    //ngx_stream_proxy_process(s, from_upstream, ev->write);
 }
 
 
@@ -1872,6 +1948,23 @@ ngx_stream_proxy_finalize(ngx_stream_session_t *s, ngx_uint_t rc)
 
     ngx_log_debug1(NGX_LOG_DEBUG_STREAM, s->connection->log, 0,
                    "finalize stream proxy: %i", rc);
+
+#if (NGX_STREAM_ALG)
+    ngx_stream_alg_ctx_t       *ctx;
+    ctx = ngx_stream_get_module_ctx(s, ngx_stream_alg_module);
+    if (ctx ) {
+        if (ctx->alg_resolved_peer) {
+            ngx_pfree(s->connection->pool,ctx->alg_resolved_peer->sockaddr);
+            ngx_pfree(s->connection->pool,ctx->alg_resolved_peer);
+        }
+        ngx_pfree(s->connection->pool,ctx);
+    } else {
+        /*child session. Need to close the listening socket.*/
+        /*TODO the listening sockets need to be orgnized*/
+        ngx_close_connection(s->connection->listening->connection);
+        ngx_pfree(s->connection->pool,s->connection->listening);
+    }
+#endif
 
     u = s->upstream;
 

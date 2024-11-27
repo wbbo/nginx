@@ -53,7 +53,9 @@ struct ngx_listening_s {
     ngx_rbtree_node_t   sentinel;
 
     ngx_uint_t          worker;
-
+#if (NGX_STREAM_ALG)
+    void *parent_stream_session;
+#endif
     unsigned            open:1;
     unsigned            remain:1;
     unsigned            ignore:1;
@@ -211,6 +213,7 @@ ngx_listening_t *ngx_create_listening(ngx_conf_t *cf, struct sockaddr *sockaddr,
 ngx_int_t ngx_clone_listening(ngx_cycle_t *cycle, ngx_listening_t *ls);
 ngx_int_t ngx_set_inherited_sockets(ngx_cycle_t *cycle);
 ngx_int_t ngx_open_listening_sockets(ngx_cycle_t *cycle);
+ngx_int_t ngx_open_one_listening_socket(ngx_listening_t *ls);
 void ngx_configure_listening_sockets(ngx_cycle_t *cycle);
 void ngx_close_listening_sockets(ngx_cycle_t *cycle);
 void ngx_close_connection(ngx_connection_t *c);

@@ -234,5 +234,50 @@ void ngx_sort(void *base, size_t n, size_t size,
 #define ngx_value_helper(n)   #n
 #define ngx_value(n)          ngx_value_helper(n)
 
+/**
+ * definition of host endian
+ */
+extern uint16_t host_endian;
+
+#define _LITTLE_ENDIAN_ ((uint8_t)host_endian == 0x34)
+#define _BIG_ENDIAN_    ((uint8_t)host_endian == 0x12)
+
+/**
+ * don't use ngx_print_hex directly. use macro NGX_PRINT_HEX instead.
+ * configure with option '--with-debug'.
+ */
+#define NGX_PRINT_HEX_SIZE 8192
+void ngx_print_hex(u_char *start, ngx_uint_t size, const char *desc);
+void ngx_print(const char *fmt, ...);
+
+#if (NGX_DEBUG)
+
+#define NGX_PRINT_HEX(start, size, desc) ngx_print_hex(start, size, desc)
+#define NGX_PRINT(fmt, ...) ngx_print(fmt, ##__VA_ARGS__)
+
+#else
+
+#define NGX_PRINT_HEX(start, size, desc)
+#define NGX_PRINT(fmt, ...)
+
+#endif
+
+/**
+ * assignment according to endian.
+ */
+#define swap16(v) (((v) & 0xff) << 8) | (((v) & 0xff00) >> 8)
+#define swap32(v) (((v) & 0xff) << 24) | (((v) & 0xff00) << 8) | (((v) & 0xff0000) >> 8) | (((v) & 0xff000000) >> 24)
+#define swap64(v) (((v) & 0xff) << 56) | (((v) & 0xff00) << 40) | (((v) & 0xff000000) << 24) | (((v) &0xff000000) << 8) \
+                  | (((v) & 0xff00000000 >> 8)) | (((v) & 0xff0000000000 >> 24)) \
+                  | (((v) & 0xff000000000000) >> 40) | (((v) & 0xff00000000000000) >> 56)
+
+#define getv8(p) (*(uint8_t *)(p))
+#define getv16(p, e) ((e) ? (*(uint16_t *)(p)) : swap16(*(uint16_t *)(p)))
+#define getv32(p, e) ((e) ? (*(uint32_t *)(p)) : swap32(*(uint32_t *)(p)))
+#define getv64(p, e) ((e) ? (*(uint64_t *)(p)) : swap64(*(uint64_t *)(p)))
+#define setv8(p, v) (*(uint8_t *)(p)) = v;
+#define setv16(p, v, e) if(e) (*(uint16_t *)(p)) = v; else (*(uint16_t *)(p)) = swap16(v);
+#define setv32(p, v, e) if(e) (*(uint32_t *)(p)) = v; else (*(uint32_t *)(p)) = swap32(v);
+#define setv64(p, v, e) if(e) (*(uint64_t *)(p)) = v; else (*(uint64_t *)(p)) = swap64(v);
 
 #endif /* _NGX_STRING_H_INCLUDED_ */
